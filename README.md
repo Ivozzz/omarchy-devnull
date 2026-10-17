@@ -21,7 +21,7 @@ write access.
 - English and Italian catalogs, following Setup > Language like the built-in
   plugins.
 
-![The panel, on the Latest feed](docs/panel.png)
+![The panel, on the Latest feed](preview.png)
 
 ## Install
 
@@ -29,19 +29,39 @@ write access.
 omarchy plugin add https://github.com/Ivozzz/omarchy-devnull.git --enable
 ```
 
-The clone lands in `~/.config/omarchy/plugins/Ivozzz.devnull` and stays a git
-checkout, so later releases are:
+The clone lands in `~/.config/omarchy/plugins/io.github.ivozzz.devnull` and stays
+a git checkout, so later releases are:
 
 ```bash
-omarchy plugin update Ivozzz.devnull
+omarchy plugin update io.github.ivozzz.devnull
 ```
 
 Already have it in a folder?
 
 ```bash
-omarchy plugin enable Ivozzz.devnull        # puts it on the bar
-omarchy restart shell                       # only if the pill does not appear
+omarchy plugin enable io.github.ivozzz.devnull   # puts it on the bar
+omarchy restart shell                            # only if the pill does not appear
 ```
+
+## Remove
+
+```bash
+omarchy plugin remove io.github.ivozzz.devnull
+```
+
+That takes the widget off the bar, unloads it from `omarchy-shell`, and deletes
+the clone. It writes nowhere else, so there is nothing else to clean up: your
+watchlist and feed choice live in the widget's own entry in
+`~/.config/omarchy/shell.json`, which goes with the bar entry.
+
+## Dependencies
+
+- `curl`, for the two read-only endpoints (see "Where each feed comes from"). It
+  is run as an argv vector with no shell in between, and its output is parsed as
+  data — never executed, never written to a file, never piped into a shell.
+- Nothing else. No package manager, no build step, no installer script, no
+  `sudo`, no `pkexec`, no service units. `quickshell` and the Omarchy shell
+  plugin API are provided by Omarchy itself.
 
 ## Where each feed comes from
 
@@ -85,10 +105,10 @@ Stored in this widget's entry in `~/.config/omarchy/shell.json`:
 | `showAvatars` | `true` | load avatars from GitHub's CDN |
 
 ```bash
-omarchy bar set Ivozzz.devnull view trending
-omarchy bar set Ivozzz.devnull watch nunomaduro,laravel,php
-omarchy bar set Ivozzz.devnull refreshMinutes 10
-omarchy bar get Ivozzz.devnull watch
+omarchy bar set io.github.ivozzz.devnull view trending
+omarchy bar set io.github.ivozzz.devnull watch nunomaduro,laravel,php
+omarchy bar set io.github.ivozzz.devnull refreshMinutes 10
+omarchy bar get io.github.ivozzz.devnull watch
 ```
 
 The tabs in the panel and the watch toggle inside it write the same entry.
@@ -143,7 +163,7 @@ BarWidget.qml     the bar pill
 Panel.qml         the popup panel
 Model.js          API and page parsing, validation, merging — no UI in it
 i18n/             en.json, it.json
-docs/panel.png    the screenshot above
+preview.png      the screenshot above, and the marketplace's card source
 tests/            node and quickshell coverage
 ```
 

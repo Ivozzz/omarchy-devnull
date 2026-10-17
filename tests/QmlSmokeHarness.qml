@@ -54,14 +54,14 @@ ShellRoot {
 
     DevNull.BarWidget {
       id: widget
-      moduleName: "Ivozzz.devnull"
+      moduleName: "io.github.ivozzz.devnull"
       bar: fakeBar
     }
 
     // Same widget with the watchlist explicitly emptied.
     DevNull.BarWidget {
       id: emptyWidget
-      moduleName: "Ivozzz.devnull"
+      moduleName: "io.github.ivozzz.devnull"
       bar: fakeBar
       settings: ({ watch: "" })
     }

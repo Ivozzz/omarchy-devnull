@@ -15,8 +15,8 @@ import "Model.js" as Model
 // whole budget). The last good feed stays on screen while a refresh runs.
 Panel {
   id: root
-  moduleName: "Ivozzz.devnull"
-  ipcTarget: "Ivozzz.devnull"
+  moduleName: "io.github.ivozzz.devnull"
+  ipcTarget: "io.github.ivozzz.devnull"
   manageIpc: false
 
   property var anchorItem: null
@@ -205,7 +205,7 @@ Panel {
   function setView(name) {
     var next = Model.view(name)
     if (next === "" || next === root.view) return
-    Util.execArgv(["omarchy-bar", "set", "Ivozzz.devnull", "view", next])
+    Util.execArgv(["omarchy-bar", "set", "io.github.ivozzz.devnull", "view", next])
   }
 
   function viewLabel(name) {
@@ -418,7 +418,7 @@ Panel {
   // writer, so the edit goes through the bar command. Passed as argv, never a
   // shell string, so a username stays data.
   function persistWatch(value) {
-    Util.execArgv(["omarchy-bar", "set", "Ivozzz.devnull", "watch", value])
+    Util.execArgv(["omarchy-bar", "set", "io.github.ivozzz.devnull", "watch", value])
     // The new watchlist has to come back through shell.json before a refresh
     // can read it, so the fetch waits a beat instead of re-reading the old one.
     refreshAfterSave.restart()

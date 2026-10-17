@@ -8,7 +8,7 @@ import qs.Ui
 // been built.
 BarWidget {
   id: root
-  moduleName: "Ivozzz.devnull"
+  moduleName: "io.github.ivozzz.devnull"
 
   readonly property var panelItem: panelLoader.item
   readonly property bool opened: panelItem ? panelItem.opened === true : false
