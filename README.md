@@ -59,9 +59,9 @@ watchlist and feed choice live in the widget's own entry in
 - `curl`, for the two read-only endpoints (see "Where each feed comes from"). It
   is run as an argv vector with no shell in between, and its output is parsed as
   data — never executed, never written to a file, never piped into a shell.
-- Nothing else. No package manager, no build step, no installer script, no sudo,
-  no pkexec, no service units. `quickshell` and the Omarchy shell plugin API are
-  provided by Omarchy itself.
+- Nothing else: no package manager, no build step, no installer script, no
+  service units, and no sudo or pkexec. `quickshell` and the Omarchy shell plugin
+  API are provided by Omarchy itself.
 
 ## Where each feed comes from
 
