@@ -1,0 +1,153 @@
+# /dev/null — an Omarchy bar widget for [dev-null.sh](https://dev-null.sh)
+
+Read-only commit feed from [dev-null.sh](https://dev-null.sh), the social
+network for developers, in the Omarchy status bar. No account, no token, no
+write access.
+
+## What it does
+
+- Three feeds, switchable from the panel or with `1` `2` `3`, named after the
+  site's own log tabs:
+  - **Following** — the merged commit log of the developers you watch
+  - **Latest** — everything on the site, newest first
+  - **Trending** — the site's own ranking
+- A bar pill showing how many commits are in the current feed. It turns accent
+  coloured while something new has arrived since the last refresh.
+- A panel listing the commits: avatar, handle, short hash, age, up to three
+  lines of the commit, and its star and reply counts. A row opens on dev-null.sh
+  in the browser.
+- A lookup box: type any GitHub username to see their profile (commit and
+  follower counts) and to add or remove them from your watchlist.
+- English and Italian catalogs, following Setup > Language like the built-in
+  plugins.
+
+## Install
+
+```bash
+omarchy plugin add https://github.com/Ivozzz/omarchy-devnull.git --enable
+```
+
+The clone lands in `~/.config/omarchy/plugins/Ivozzz.devnull` and stays a git
+checkout, so later releases are:
+
+```bash
+omarchy plugin update Ivozzz.devnull
+```
+
+Already have it in a folder?
+
+```bash
+omarchy plugin enable Ivozzz.devnull        # puts it on the bar
+omarchy restart shell                       # only if the pill does not appear
+```
+
+## Where each feed comes from
+
+dev-null.sh publishes a public, read-only JSON API under `/api/v1` with no
+authentication:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/users/{username}` | a public profile |
+| `GET /api/v1/users/{username}/commits` | that user's commits, newest first, 20 per page |
+| `GET /api/v1/commits/{id}` | one commit |
+
+There is no global timeline endpoint and no search, so **Following** is built
+from that API: one request per watched user, merged and sorted. The site's own
+`/log/following` is not used because it answers `302` to the login page, and
+this plugin has no session and wants none.
+
+**Latest** and **Trending** have no API endpoint at all. They are read from the
+Inertia payload the site already embeds in those two pages — a
+`<script type="application/json">` tag whose `props.commits.data` carries the
+same commit shape as the API. Only that JSON is read; the surrounding markup is
+never parsed, so a redesign of the HTML costs nothing. Two consequences of the
+payload carrying less than the API does: the short hash is not in it (those rows
+show none), and an avatar hosted on `dev-null.sh` itself rather than on GitHub's
+CDN is not loaded.
+
+The API allows 60 requests per minute per IP. A Following refresh costs one
+request per watched user and runs them one at a time; the other two cost a
+single page each. Five minutes and a handful of users stays well inside it.
+
+## Settings
+
+Stored in this widget's entry in `~/.config/omarchy/shell.json`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `view` | `following` | `following`, `latest` or `trending` |
+| `watch` | `nunomaduro,brendt,paulinevos,mnapoli` | comma-separated GitHub usernames |
+| `includeReplies` | `false` | fetch replies as well as top-level commits |
+| `refreshMinutes` | `5` | refresh interval, 1–60 |
+| `showAvatars` | `true` | load avatars from GitHub's CDN |
+
+```bash
+omarchy bar set Ivozzz.devnull view trending
+omarchy bar set Ivozzz.devnull watch nunomaduro,laravel,php
+omarchy bar set Ivozzz.devnull refreshMinutes 10
+omarchy bar get Ivozzz.devnull watch
+```
+
+The tabs in the panel and the watch toggle inside it write the same entry.
+
+## Keys and mouse
+
+| | |
+|---|---|
+| click the pill | open or close the panel |
+| middle click the pill | refresh now |
+| `1` `2` `3` | Following / Latest / Trending |
+| `↑` / `↓` | move the row cursor |
+| `Enter` | open the selected commit |
+| `r` | refresh |
+| `/` | jump to the lookup box |
+| `Tab` | hand the popup to the next bar panel |
+| `Esc` | close |
+
+## Privacy and safety
+
+- Only two kinds of URL are ever requested: `https://dev-null.sh/api/v1/users/…`
+  for the watchlist, and `https://dev-null.sh/log/latest` or
+  `https://dev-null.sh/log/trending` for the other two feeds. Each has its own
+  allowlist checked against the whole URL, and anything else produces no command
+  at all — the two log URLs come from a fixed table, so no setting can steer
+  them.
+- Every request is a bounded `curl` (4s connect, 8–12s total, 2–4 MB cap) run
+  as an argv vector, never through a shell.
+- Reopening the panel cannot spend the rate limit: a refresh more than once a
+  minute is skipped unless you ask for it (middle click, `r`, or a tab change).
+- Commit text is treated as untrusted wherever it comes from: markup is removed
+  rather than escaped, invisible and bidi characters are dropped, strings and
+  lists are length capped, and the commit URL handed to the browser is rebuilt
+  from the validated username and id instead of taken from the response.
+- Avatars load only from `avatars.githubusercontent.com` and
+  `user-images.githubusercontent.com`, and only when `showAvatars` is on.
+- Which commits you have already seen is kept in memory for the shell session.
+  Nothing is written to disk beyond the settings above.
+
+## Tests
+
+```bash
+node --test tests/model.test.js    # API and page parsing, validation, merge, freshness
+./tests/qml-smoke.test.sh          # compiles and instantiates both entry points
+```
+
+## Layout
+
+```
+manifest.json     plugin manifest and the settings schema
+BarWidget.qml     the bar pill
+Panel.qml         the popup panel
+Model.js          API and page parsing, validation, merging — no UI in it
+i18n/             en.json, it.json
+tests/            node and quickshell coverage
+```
+
+## Credits and licence
+
+MIT — see [LICENSE](LICENSE).
+
+Built on the Omarchy shell plugin architecture; see [NOTICE](NOTICE) for the
+attribution. Not affiliated with or endorsed by dev-null.sh: the plugin only
+reads the site's public endpoints.

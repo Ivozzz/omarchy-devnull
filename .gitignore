@@ -1,0 +1,11 @@
+# Nothing here is generated, but keep editor and OS noise out of the clone:
+# `omarchy plugin add` copies this repository into ~/.config/omarchy/plugins,
+# so a stray .DS_Store would travel with it.
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Screenshots are written next to the README by hand, not by a build.
+*.tmp.png

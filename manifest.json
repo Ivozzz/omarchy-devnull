@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "id": "Ivozzz.devnull",
+  "name": "/dev/null",
+  "version": "0.1.0",
+  "author": "ivo",
+  "license": "MIT",
+  "description": "Read-only dev-null.sh commit feed for the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "/dev/null",
+    "description": "Merged commit log from the dev-null.sh developers you watch.",
+    "category": "Social",
+    "aliases": ["devnull", "dev-null", "devnullsh", "social", "feed"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "view": "following",
+      "watch": "nunomaduro,brendt,paulinevos,mnapoli",
+      "includeReplies": false,
+      "refreshMinutes": 5,
+      "showAvatars": true
+    },
+    "schema": [
+      {
+        "key": "view",
+        "type": "enum",
+        "label": "Feed",
+        "options": ["Following", "Latest", "Trending"],
+        "defaultValue": "Following",
+        "description": "Following is this plugin's watchlist, merged from the public API. Latest and Trending are read from the site's own log pages."
+      },
+      {
+        "key": "watch",
+        "type": "string",
+        "label": "Watched GitHub usernames",
+        "defaultValue": "nunomaduro,brendt,paulinevos,mnapoli",
+        "description": "Comma separated. dev-null.sh publishes no global timeline endpoint, so the feed is the merged commit log of these users."
+      },
+      {
+        "key": "includeReplies",
+        "type": "boolean",
+        "label": "Include replies",
+        "defaultValue": false,
+        "description": "Fetch each user's replies as well as their top-level commits."
+      },
+      {
+        "key": "refreshMinutes",
+        "type": "integer",
+        "label": "Refresh (minutes)",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "The public API allows 60 requests per minute per IP; one refresh costs one request per watched user."
+      },
+      {
+        "key": "showAvatars",
+        "type": "boolean",
+        "label": "Show avatars",
+        "defaultValue": true
+      }
+    ]
+  }
+}
