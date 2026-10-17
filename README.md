@@ -21,6 +21,8 @@ write access.
 - English and Italian catalogs, following Setup > Language like the built-in
   plugins.
 
+![The panel, on the Latest feed](docs/panel.png)
+
 ## Install
 
 ```bash
@@ -141,6 +143,7 @@ BarWidget.qml     the bar pill
 Panel.qml         the popup panel
 Model.js          API and page parsing, validation, merging — no UI in it
 i18n/             en.json, it.json
+docs/panel.png    the screenshot above
 tests/            node and quickshell coverage
 ```
 
