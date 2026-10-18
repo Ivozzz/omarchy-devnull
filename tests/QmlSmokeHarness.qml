@@ -58,12 +58,13 @@ ShellRoot {
       bar: fakeBar
     }
 
-    // Same widget with the watchlist explicitly emptied.
+    // Same widget with the watchlist emptied and the booleans written the way
+    // `omarchy bar set` writes them: as strings.
     DevNull.BarWidget {
       id: emptyWidget
       moduleName: "io.github.ivozzz.devnull"
       bar: fakeBar
-      settings: ({ watch: "" })
+      settings: ({ watch: "", notifyNewPosts: "false", showAvatars: "0", includeReplies: "off" })
     }
   }
 
@@ -91,6 +92,13 @@ ShellRoot {
     // the defaults have to come from the code too.
     shell.expect("default watchlist", panel.watchList.length === 4, String(panel.watchList.length))
     shell.expect("explicit empty watchlist", emptyPanel.watchList.length === 0, String(emptyPanel.watchList.length))
+
+    // "false" is a truthy string; a setting switched off through the CLI has
+    // to read as off.
+    shell.expect("notifications on by default", panel.notifyNewPosts === true)
+    shell.expect("string false reads as off", emptyPanel.notifyNewPosts === false)
+    shell.expect("string 0 reads as off", emptyPanel.showAvatars === false)
+    shell.expect("string off reads as off", emptyPanel.includeReplies === false)
 
     // With no feed yet the pill shows a placeholder, never a stale count; the
     // timer may already have a request in flight, hence the two.

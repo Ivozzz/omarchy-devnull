@@ -36,18 +36,32 @@ Panel {
   readonly property string view: Model.view(setting("view", "following")) || "following"
   readonly property var views: Model.VIEWS
 
+  // A boolean setting arrives in two shapes: a real boolean when the settings
+  // form wrote it, and a string when `omarchy bar set` did — and "false" is a
+  // truthy string, so reading it the obvious way would leave a feature the
+  // user just switched off switched on.
+  function boolSetting(name, fallback) {
+    var value = setting(name, undefined)
+    if (value === undefined || value === null) return fallback
+    if (typeof value === "boolean") return value
+    var text = String(value).trim().toLowerCase()
+    if (text === "false" || text === "0" || text === "no" || text === "off") return false
+    if (text === "true" || text === "1" || text === "yes" || text === "on") return true
+    return fallback
+  }
+
   // A view changed from anywhere — a tab click or `omarchy bar set` — refills
   // the feed straight away instead of leaving the old one up until the timer.
   onViewChanged: Qt.callLater(function() { root.refresh(true) })
-  readonly property bool includeReplies: !!setting("includeReplies", false)
+  readonly property bool includeReplies: root.boolSetting("includeReplies", false)
   readonly property int refreshMinutes: Math.max(1, Math.min(60, parseInt(setting("refreshMinutes", 5), 10) || 5))
-  readonly property bool showAvatars: !!setting("showAvatars", true)
+  readonly property bool showAvatars: root.boolSetting("showAvatars", true)
   // A desktop notification when a watched developer posts. On by default,
   // because that is the point of watching somebody; `notifyNewPosts false`
   // turns it off. The README says so too — the widget refreshes on a timer
   // whether or not anyone is looking at it, and this is the one part of that
   // the user sees outside the panel.
-  readonly property bool notifyNewPosts: !!setting("notifyNewPosts", true)
+  readonly property bool notifyNewPosts: root.boolSetting("notifyNewPosts", true)
 
   // ---- Feed state -------------------------------------------------------
   property var entries: []
