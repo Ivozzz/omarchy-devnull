@@ -180,32 +180,58 @@ ShellRoot {
       argv[argv.length - 3] === "--exec" && argv[argv.length - 2] === "omarchy-launch-browser")
 
     shell.expect("nothing to notify about, nothing sent", panel.notifyArgv(Model.unseen([], [])).length === 0)
+
+    // The composition: a refresh that finds a commit the panel has not seen
+    // raises the fresh count, and the same refresh a second time does not.
+    // maybeNotify is not called here — it would put a toast on the desktop
+    // while the tests run — so this covers the counting half of it.
+    var freshFeed = Model.parseCommits(JSON.stringify({ data: [{
+      id: "01a14b77-db13-7104-ba00-88e5315a0267",
+      short_hash: "aa0267",
+      body: "a commit that arrives after priming",
+      created_at: "2026-10-17T12:00:00Z",
+      stars_count: 0,
+      replies_count: 0,
+      author: { username: "richardkeep", name: "Richard", avatar_url: "https://avatars.githubusercontent.com/u/3?v=4" }
+    }] }))
+
+    panel.applyFeed(page)
+    shell.expect("priming does not count as fresh", panel.freshCount === 0, String(panel.freshCount))
+    panel.applyFeed(page.concat(freshFeed))
+    shell.expect("a new commit counts once", panel.freshCount === 1, String(panel.freshCount))
+    shell.expect("the pill counts it", panel.barText === "2", panel.barText)
+    panel.applyFeed(page.concat(freshFeed))
+    shell.expect("the same refresh again counts nothing", panel.freshCount === 0, String(panel.freshCount))
     shell.expect("no click target without a url",
       panel.notifyArgv({count: 1, authors: ["brendt"], authorCount: 1, newest: {body: "x", url: ""}}).indexOf("--exec") === -1)
 
     // The panel builds its content lazily on first open, and the row delegates
-    // only exist once it has: open it, then feed it commits and check the rows
-    // actually took up space. An empty model would leave the riskiest layout
-    // math untested.
+    // only exist once it has: open it, then feed it a longer list and check
+    // the rows actually took up space. An empty model would leave the riskiest
+    // layout math untested.
     panel.open()
     Qt.callLater(function() {
       var before = shell.contentHeight(panel)
       shell.expect("content built on open", before > 0, String(before))
 
-      panel.entries = parsed.concat(Model.parseCommits(JSON.stringify({ data: [{
-        id: "01a149c2-f76d-703d-ae60-e82d7960889a",
-        short_hash: "cef7611",
-        body: "a second commit, to prove the rows stack",
-        created_at: "2026-10-17T11:00:00Z",
-        stars_count: 0,
-        replies_count: 24,
-        author: { username: "brendt", name: "Brent Roose", avatar_url: "https://avatars.githubusercontent.com/u/2?v=4" }
-      }] })))
+      var six = []
+      for (var i = 0; i < 6; i++) {
+        six = six.concat(Model.parseCommits(JSON.stringify({ data: [{
+          id: "01a149c2-f76d-703d-ae60-88e5315a026" + i,
+          short_hash: "cef761" + i,
+          body: "row " + i + ", to prove the rows stack and the panel grows",
+          created_at: "2026-10-17T11:0" + i + ":00Z",
+          stars_count: 0,
+          replies_count: 24 - i,
+          author: { username: "brendt", name: "Brent Roose", avatar_url: "https://avatars.githubusercontent.com/u/2?v=4" }
+        }] })))
+      }
+      panel.applyFeed(six)
 
       Qt.callLater(function() {
         var after = shell.contentHeight(panel)
-        shell.expect("rows laid out", after > before + 80, before + " -> " + after)
-        shell.expect("bar text counts the feed", panel.barText === "2", panel.barText)
+        shell.expect("rows laid out", after > before + 200, before + " -> " + after)
+        shell.expect("bar text counts the feed", panel.barText === "6", panel.barText)
 
         // The three tab labels are in the built content. Their text depends on
         // the shell's language, so they are matched by name in both
