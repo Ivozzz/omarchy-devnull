@@ -192,6 +192,14 @@ node --test tests/model.test.js    # API and page parsing, validation, merge, fr
 ./tests/qml-smoke.test.sh          # compiles and instantiates both entry points
 ```
 
+Saving a QML file under `~/.config/omarchy/plugins/` reloads plugin code on
+save. It has not always taken effect here, so if a change does not show up in
+the bar or the panel:
+
+```bash
+omarchy restart shell
+```
+
 ## Layout
 
 ```
