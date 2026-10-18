@@ -100,6 +100,10 @@ ShellRoot {
     shell.expect("string 0 reads as off", emptyPanel.showAvatars === false)
     shell.expect("string off reads as off", emptyPanel.includeReplies === false)
 
+    // The switch exists and says which way it would go. It is not clicked
+    // here: that would write to shell.json while the tests run.
+    shell.expect("toggle is a real function", typeof panel.toggleNotify === "function")
+
     // With no feed yet the pill shows a placeholder, never a stale count; the
     // timer may already have a request in flight, hence the two.
     shell.expect("idle bar text", panel.barText === "–" || panel.barText === "…", panel.barText)
@@ -241,6 +245,13 @@ ShellRoot {
         })
         shell.expect("three feed tabs", labels.length === 3, labels.join("|"))
 
+        // The bell sits in the panel, so its state has to be readable there:
+        // the switch is how a user turns notifications off without a shell.
+        var bell = shell.texts(shell.keyboardPanel(panel).loadedContent).filter(function(value) {
+          return /mute|muted|silenz|riattiv/i.test(String(value))
+        })
+        shell.expect("the notification switch states its state", bell.length > 0, bell.join("|"))
+
         finish()
       })
     })
@@ -254,12 +265,16 @@ ShellRoot {
     return null
   }
 
-  // Every Text bound in a subtree, so the harness can assert on what the panel
-  // actually renders without reaching into ids it does not own.
+  // The visible strings bound in a subtree, so the harness can assert on what
+  // the panel actually renders without reaching into ids it does not own. A
+  // tooltip is a property, not a Text — the shared tooltip only builds on
+  // hover — so those are collected too.
   function texts(item, out) {
     var found = out || []
     if (!item) return found
     if (typeof item.text === "string") found.push(item.text)
+    if (typeof item.tooltipText === "string") found.push(item.tooltipText)
+    if (typeof item.placeholderText === "string") found.push(item.placeholderText)
     var kids = item.children || []
     for (var i = 0; i < kids.length; i++) texts(kids[i], found)
     return found

@@ -21,7 +21,8 @@ write access.
 - **A desktop notification when somebody you watch posts.** It names them,
   carries the first line of the commit, and opens the commit when clicked. One
   notification per batch rather than one per commit, never while the panel is
-  open, and only on the Following feed. `notifyNewPosts false` turns it off.
+  open, and only on the Following feed. The bell next to the lookup box is the
+  switch: on by default, and clicking it turns it off for good.
 - English and Italian catalogs, following Setup > Language like the built-in
   plugins.
 
@@ -107,7 +108,7 @@ Stored in this widget's entry in `~/.config/omarchy/shell.json`:
 | `includeReplies` | `false` | fetch replies as well as top-level commits |
 | `refreshMinutes` | `5` | refresh interval, 1–60 |
 | `showAvatars` | `true` | load avatars from GitHub's CDN |
-| `notifyNewPosts` | `true` | desktop notification when a watched developer posts |
+| `notifyNewPosts` | `true` | desktop notification when a watched developer posts; the bell in the panel writes this |
 
 ```bash
 omarchy bar set io.github.ivozzz.devnull view trending
@@ -137,7 +138,8 @@ that happen without you asking:
   changed" and wrong for "somebody you follow posted". These take the ordinary
   path — DND silences them, and they stay in the notification history.
 
-To stop all of it, remove the plugin. To stop only the notifications:
+To stop all of it, remove the plugin. To stop only the notifications, click the
+bell in the panel or:
 
 ```bash
 omarchy bar set io.github.ivozzz.devnull notifyNewPosts false

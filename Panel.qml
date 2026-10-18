@@ -448,6 +448,17 @@ Panel {
     }
   }
 
+  // ---- Notifications toggle ---------------------------------------------
+  // A setting the user can see and change from here, rather than one that
+  // only exists as a command in the README. Written through omarchy-bar like
+  // every other setting, so it comes back through `settings` on its own.
+  function toggleNotify() {
+    Util.execArgv([
+      "omarchy-bar", "set", "io.github.ivozzz.devnull", "notifyNewPosts",
+      root.notifyNewPosts ? "false" : "true"
+    ])
+  }
+
   // ---- Lookup and watchlist --------------------------------------------
   function lookupUser() {
     var name = Model.username(searchField.text)
@@ -682,7 +693,7 @@ Panel {
 
             TextField {
               id: searchField
-              width: parent.width - lookupButton.width - parent.spacing
+              width: parent.width - lookupButton.width - notifyButton.width - parent.spacing * 2
               placeholderText: strings.t("search.placeholder", "GitHub username")
               foreground: root.barForeground
               font.family: root.bar.fontFamily
@@ -716,6 +727,20 @@ Panel {
                 duration: 900
                 loops: Animation.Infinite
               }
+            }
+
+            // The notification switch, next to the lookup rather than buried
+            // in a settings file. Off state is dimmed rather than hidden: the
+            // point is that the choice exists, so it stays visible either way.
+            PanelActionButton {
+              id: notifyButton
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: root.notifyNewPosts ? "\uf0f3" : "\uf0f4"  // bell / bell-slash
+              foreground: root.notifyNewPosts ? root.barForeground : Qt.darker(root.barForeground, 1.5)
+              tooltipText: root.notifyNewPosts
+                ? strings.t("notify.action.off", "Notifications on — click to mute")
+                : strings.t("notify.action.on", "Notifications off — click to unmute")
+              onClicked: root.toggleNotify()
             }
           }
 
