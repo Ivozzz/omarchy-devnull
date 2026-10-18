@@ -426,17 +426,45 @@ function markSeen(previous, entries) {
   return out;
 }
 
-function countUnseen(entries, previous) {
+// What arrived since the last refresh: how many commits, who posted them, and
+// the newest one to link to. Every string here is already stripped, which is
+// what makes it safe to hand to a notification — that card renders its body as
+// StyledText on purpose, so a notification is a markup sink like any other.
+function unseen(entries, previous) {
   var known = Array.isArray(previous) ? previous : [];
   var list = Array.isArray(entries) ? entries : [];
   var seen = {};
+  var authors = {};
+  var order = [];
   var fresh = 0;
+  var newest = null;
 
   for (var i = 0; i < known.length; i++) seen[String(known[i])] = true;
+
   for (var j = 0; j < list.length; j++) {
-    if (isObject(list[j]) && !seen[String(list[j].id)]) fresh++;
+    var entry = list[j];
+    if (!isObject(entry)) continue;
+    // Same rule as markSeen: an entry without a usable id was never recorded
+    // as seen, so counting it here would notify for something nobody can open.
+    var id = commitId(entry.id);
+    if (id === "" || seen[id]) continue;
+
+    fresh++;
+    seen[id] = true;
+    if (!newest || (entry.createdAtMs || 0) > (newest.createdAtMs || 0)) newest = entry;
+
+    var author = username(entry.authorUsername);
+    if (author !== "" && !authors[author]) {
+      authors[author] = true;
+      order.push(author);
+    }
   }
-  return fresh;
+
+  return { count: fresh, authors: order.slice(0, 3), authorCount: order.length, newest: newest };
+}
+
+function countUnseen(entries, previous) {
+  return unseen(entries, previous).count;
 }
 
 if (typeof module !== "undefined") {
@@ -481,6 +509,7 @@ if (typeof module !== "undefined") {
     excerpt: excerpt,
     ageUnit: ageUnit,
     markSeen: markSeen,
-    countUnseen: countUnseen
+    countUnseen: countUnseen,
+    unseen: unseen
   };
 }

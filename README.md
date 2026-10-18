@@ -18,6 +18,10 @@ write access.
   in the browser.
 - A lookup box: type any GitHub username to see their profile (commit and
   follower counts) and to add or remove them from your watchlist.
+- **A desktop notification when somebody you watch posts.** It names them,
+  carries the first line of the commit, and opens the commit when clicked. One
+  notification per batch rather than one per commit, never while the panel is
+  open, and only on the Following feed. `notifyNewPosts false` turns it off.
 - English and Italian catalogs, following Setup > Language like the built-in
   plugins.
 
@@ -103,15 +107,41 @@ Stored in this widget's entry in `~/.config/omarchy/shell.json`:
 | `includeReplies` | `false` | fetch replies as well as top-level commits |
 | `refreshMinutes` | `5` | refresh interval, 1–60 |
 | `showAvatars` | `true` | load avatars from GitHub's CDN |
+| `notifyNewPosts` | `true` | desktop notification when a watched developer posts |
 
 ```bash
 omarchy bar set io.github.ivozzz.devnull view trending
 omarchy bar set io.github.ivozzz.devnull watch nunomaduro,laravel,php
 omarchy bar set io.github.ivozzz.devnull refreshMinutes 10
+omarchy bar set io.github.ivozzz.devnull notifyNewPosts false
 omarchy bar get io.github.ivozzz.devnull watch
 ```
 
 The tabs in the panel and the watch toggle inside it write the same entry.
+
+## What runs in the background
+
+The widget is alive whether or not the panel is open, and these are the things
+that happen without you asking:
+
+- Every `refreshMinutes`, it fetches the current feed. Nothing is stored: the
+  feed, and the list of commit ids already counted as seen, live in memory for
+  the shell session only.
+- With `notifyNewPosts` on, a refresh that finds new commits from somebody you
+  watch sends one desktop notification. It is skipped entirely while the panel
+  is open, because then the commits are already on screen, and consecutive
+  notifications replace one another instead of stacking up.
+- A notification names itself `dev-null.sh` rather than borrowing Omarchy's own
+  app name. That matters: the notification service lets its own action toasts
+  past Do Not Disturb and treats them as throwaway, which is right for "theme
+  changed" and wrong for "somebody you follow posted". These take the ordinary
+  path — DND silences them, and they stay in the notification history.
+
+To stop all of it, remove the plugin. To stop only the notifications:
+
+```bash
+omarchy bar set io.github.ivozzz.devnull notifyNewPosts false
+```
 
 ## Keys and mouse
 
@@ -142,7 +172,12 @@ The tabs in the panel and the watch toggle inside it write the same entry.
 - Commit text is treated as untrusted wherever it comes from: markup is removed
   rather than escaped, invisible and bidi characters are dropped, strings and
   lists are length capped, and the commit URL handed to the browser is rebuilt
-  from the validated username and id instead of taken from the response.
+  from the validated username and id instead of taken from the response. That
+  last part covers the notifications too, whose body is rendered as styled text
+  on purpose — so the text they carry is the same stripped text the panel shows,
+  never a raw commit body.
+- The notification is sent as an argv vector, and the only command its click
+  action can run is the browser, with a commit URL rebuilt the same way.
 - Avatars load only from `avatars.githubusercontent.com` and
   `user-images.githubusercontent.com`, and only when `showAvatars` is on.
 - Which commits you have already seen is kept in memory for the shell session.
@@ -151,7 +186,7 @@ The tabs in the panel and the watch toggle inside it write the same entry.
 ## Tests
 
 ```bash
-node --test tests/model.test.js    # API and page parsing, validation, merge, freshness
+node --test tests/model.test.js    # API and page parsing, validation, merge, freshness, notifications
 ./tests/qml-smoke.test.sh          # compiles and instantiates both entry points
 ```
 

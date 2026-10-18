@@ -276,6 +276,42 @@ test("the first refresh counts nothing as new", () => {
   assert.equal(Model.countUnseen(entries, Model.markSeen([], entries)), 0)
 })
 
+test("unseen names who posted and hands back the newest", () => {
+  const entries = Model.parseCommits(list([
+    commit({ id: uuidId(1), created_at: "2026-10-17T12:00:00Z" }),
+    commit({ id: uuidId(2), created_at: "2026-10-17T09:00:00Z", author: { username: "brendt" } }),
+    commit({ id: uuidId(3), created_at: "2026-10-17T11:00:00Z", author: { username: "brendt" } })
+  ]))
+  const known = [entries[0].id]
+
+  const summary = Model.unseen(entries, known)
+  assert.equal(summary.count, 2)
+  assert.deepEqual(summary.authors, ["brendt"])   // one entry per author
+  assert.equal(summary.authorCount, 1)
+  assert.equal(summary.newest.id, uuidId(3))     // the newer of the two unseen
+
+  // A second pass over the same feed has nothing left to report.
+  assert.equal(Model.unseen(entries, Model.markSeen(known, entries)).count, 0)
+})
+
+test("unseen caps the author list but still counts them all", () => {
+  const entries = Model.parseCommits(list(
+    Array.from({ length: 6 }, (_, i) => commit({ id: uuidId(i), author: { username: `user${i}` } }))
+  ))
+  const summary = Model.unseen(entries, [])
+
+  assert.equal(summary.count, 6)
+  assert.equal(summary.authors.length, 3)
+  assert.equal(summary.authorCount, 6)
+})
+
+test("unseen ignores a junk entry without losing the rest", () => {
+  const entries = Model.parseCommits(list([commit()]))
+  const summary = Model.unseen([null, "junk", entries[0], {}], [])
+  assert.equal(summary.count, 1)
+  assert.deepEqual(summary.authors, ["nunomaduro"])
+})
+
 test("markSeen caps the memory it holds", () => {
   const entries = Array.from({ length: 500 }, (_, i) => ({ id: uuidId(i) }))
   assert.equal(Model.markSeen([], entries).length, Model.SEEN_LIMIT)

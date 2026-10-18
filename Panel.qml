@@ -42,6 +42,12 @@ Panel {
   readonly property bool includeReplies: !!setting("includeReplies", false)
   readonly property int refreshMinutes: Math.max(1, Math.min(60, parseInt(setting("refreshMinutes", 5), 10) || 5))
   readonly property bool showAvatars: !!setting("showAvatars", true)
+  // A desktop notification when a watched developer posts. On by default,
+  // because that is the point of watching somebody; `notifyNewPosts false`
+  // turns it off. The README says so too — the widget refreshes on a timer
+  // whether or not anyone is looking at it, and this is the one part of that
+  // the user sees outside the panel.
+  readonly property bool notifyNewPosts: !!setting("notifyNewPosts", true)
 
   // ---- Feed state -------------------------------------------------------
   property var entries: []
@@ -292,17 +298,82 @@ Panel {
   }
 
   // One place decides what a feed means for the rest of the panel: the rows,
-  // the count in the bar, and what counts as new since the last refresh. The
-  // first refresh has nothing to compare against, so nothing in it reads as
-  // new.
+  // the count in the bar, what counts as new since the last refresh, and
+  // whether that is worth a notification. The first refresh has nothing to
+  // compare against, so nothing in it reads as new and nothing in it notifies.
   function applyFeed(commits) {
-    var fresh = root.primed ? Model.countUnseen(commits, root.seenIds) : 0
-    root.seenIds = Model.markSeen(root.primed ? root.seenIds : [], commits)
+    var wasPrimed = root.primed
+    var summary = Model.unseen(commits, wasPrimed ? root.seenIds : [])
+    var fresh = wasPrimed ? summary.count : 0
+
+    root.seenIds = Model.markSeen(wasPrimed ? root.seenIds : [], commits)
     root.primed = true
 
     root.entries = commits
     root.freshCount = fresh
     if (root.cursorIndex >= commits.length) root.cursorIndex = commits.length - 1
+
+    if (wasPrimed) root.maybeNotify(summary)
+  }
+
+  // ---- Notifications -----------------------------------------------------
+  // Only for the watchlist: Latest and Trending are everybody's posts, and a
+  // notification for those would be noise. Skipped while the panel is open,
+  // since the rows are already on screen. Dedup is the seen-ids bookkeeping
+  // above — a commit is counted once, so it notifies once.
+  function maybeNotify(summary) {
+    if (!root.notifyNewPosts) return
+    if (root.view !== "following") return
+    if (root.opened) return
+    if (!summary || summary.count === 0) return
+
+    var argv = root.notifyArgv(summary)
+    if (argv.length === 0) return
+    Util.execArgv(argv)
+  }
+
+  // The argv for one notification. A list, never a shell string: the headline
+  // and the body carry text that came off the network, and the click target is
+  // the commit URL the model rebuilt from a validated username and id.
+  //
+  // `--app-name dev-null.sh` is deliberate. The notification service treats
+  // Omarchy's own action toasts as ephemeral and lets them past Do Not
+  // Disturb; a background feed update is neither, so it names itself and takes
+  // the ordinary path: silenced by DND, kept in history.
+  function notifyArgv(summary) {
+    if (!summary || summary.count === 0) return []
+
+    var names = []
+    for (var i = 0; i < summary.authors.length; i++) names.push("@" + summary.authors[i])
+    var headline = root.fill(strings.t("notify.authors", "%1 posted on /dev/null"), names.join(", "))
+    if (headline === "") return []
+
+    var body = ""
+    if (summary.count > 1) {
+      body = root.fill(
+        strings.tn("notify.count", summary.count, "%1 new commits"),
+        Commons.I18n.formatNumber(summary.count)
+      ) + "\n"
+    }
+    if (summary.newest) body += Model.excerpt(summary.newest.body, 140)
+    if (body === "") body = headline
+
+    var argv = [
+      "omarchy-notification-send",
+      "--app-name", "dev-null.sh",
+      "-g", "\uf120",
+      // A fixed replacement id: a burst while you are away updates one
+      // notification instead of stacking five.
+      "--replace-id", "91507",
+      headline,
+      body
+    ]
+
+    // --exec has to come last: it swallows the rest of the argv.
+    if (summary.newest && summary.newest.url !== "") {
+      argv.push("--exec", "omarchy-launch-browser", summary.newest.url)
+    }
+    return argv
   }
 
   Timer {

@@ -149,6 +149,32 @@ ShellRoot {
       && page[0].url === "https://dev-null.sh/@brendt/commits/01a14a51-db13-7104-ba00-88e5315a0267")
     shell.expect("unreadable page is empty", Model.parseLogPage("<html>login</html>").length === 0)
 
+    // ---- Notifications ------------------------------------------------
+    // The argv is checked, never sent: the harness must not put a toast on
+    // the user's desktop while it runs.
+    var summary = Model.unseen(page.concat(parsed), [])
+    var argv = panel.notifyArgv(summary)
+
+    shell.expect("notify argv built", argv[0] === "omarchy-notification-send", String(argv[0]))
+    shell.expect("notify names itself", argv[1] === "--app-name" && argv[2] === "dev-null.sh", argv.slice(1, 3).join(" "))
+    shell.expect("notify replaces a fixed id", argv[argv.indexOf("--replace-id") + 1] === "91507")
+
+    var headline = argv[argv.indexOf("91507") + 1]
+    var body = argv[argv.indexOf("91507") + 2]
+    shell.expect("notify headline is plain", headline.indexOf("<") === -1, headline)
+    shell.expect("notify headline names the author", headline.indexOf("@brendt") !== -1, headline)
+    shell.expect("notify body is plain", body.indexOf("<") === -1, body)
+    shell.expect("notify body is not the headline", body !== headline, body)
+    shell.expect("notify click target is last", argv[argv.length - 1] === summary.newest.url, argv[argv.length - 1])
+    shell.expect("notify click target is the rebuilt url",
+      summary.newest.url === "https://dev-null.sh/@brendt/commits/01a14a51-db13-7104-ba00-88e5315a0267", summary.newest.url)
+    shell.expect("notify uses a browser, not a shell",
+      argv[argv.length - 3] === "--exec" && argv[argv.length - 2] === "omarchy-launch-browser")
+
+    shell.expect("nothing to notify about, nothing sent", panel.notifyArgv(Model.unseen([], [])).length === 0)
+    shell.expect("no click target without a url",
+      panel.notifyArgv({count: 1, authors: ["brendt"], authorCount: 1, newest: {body: "x", url: ""}}).indexOf("--exec") === -1)
+
     // The panel builds its content lazily on first open, and the row delegates
     // only exist once it has: open it, then feed it commits and check the rows
     // actually took up space. An empty model would leave the riskiest layout

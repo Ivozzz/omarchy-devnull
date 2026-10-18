@@ -19,6 +19,8 @@
   "profile.commits": { "one": "%1 commit", "other": "%1 commit" },
   "profile.followers": { "one": "%1 follower", "other": "%1 follower" },
   "row.reply": "risposta",
+  "notify.authors": "%1 ha pubblicato su /dev/null",
+  "notify.count": { "one": "%1 nuovo commit", "other": "%1 nuovi commit" },
   "age.seconds": { "one": "%1 secondo fa", "other": "%1 secondi fa" },
   "age.minutes": { "one": "%1 minuto fa", "other": "%1 minuti fa" },
   "age.hours": { "one": "%1 ora fa", "other": "%1 ore fa" },
