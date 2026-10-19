@@ -62,6 +62,11 @@ Panel {
   // whether or not anyone is looking at it, and this is the one part of that
   // the user sees outside the panel.
   readonly property bool notifyNewPosts: root.boolSetting("notifyNewPosts", true)
+  // A sound with that notification, so a post that lands while the panel is
+  // shut is heard as well as seen. The notification service has no sound of its
+  // own, so this is a second command beside the send; it takes the same switch
+  // as the toast and is silenced with it by Do Not Disturb.
+  readonly property bool notifySound: root.boolSetting("notifySound", true)
 
   // ---- Feed state -------------------------------------------------------
   property var entries: []
@@ -344,6 +349,7 @@ Panel {
     var argv = root.notifyArgv(summary)
     if (argv.length === 0) return
     Util.execArgv(argv)
+    root.playNotifySound()
   }
 
   // The argv for one notification. A list, never a shell string: the headline
@@ -388,6 +394,34 @@ Panel {
       argv.push("--exec", "omarchy-launch-browser", summary.newest.url)
     }
     return argv
+  }
+
+  // The sound that rides with a notification, or an empty list when there is
+  // none to play. A list for the same reason as the notification's: it is run
+  // as an argv vector, never re-parsed by a shell.
+  //
+  // `message-new-instant` is the freedesktop sound event for an arriving
+  // message, and canberra resolves it through the sound theme the user has
+  // active, so changing the theme changes what is heard.
+  function soundArgv() {
+    if (!root.notifySound) return []
+    // The sound has to stop where the toast stops. DND is the notification
+    // service's own switch, read live off the same proxy the bar's DND
+    // indicator uses rather than guessed from a state file. If the service is
+    // not reachable the check is skipped, not the sound: the plugin cannot see
+    // DND either way, and a notification that was sent and never seen is a
+    // bigger surprise than one that was heard.
+    var service = root.bar && root.bar.shell
+      && typeof root.bar.shell.firstPartyServiceFor === "function"
+      ? root.bar.shell.firstPartyServiceFor("omarchy.notifications") : null
+    if (service && service.doNotDisturb === true) return []
+    return ["canberra-gtk-play", "-i", "message-new-instant"]
+  }
+
+  function playNotifySound() {
+    var argv = root.soundArgv()
+    if (argv.length === 0) return
+    Util.execArgv(argv)
   }
 
   Timer {

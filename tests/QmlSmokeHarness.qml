@@ -64,7 +64,7 @@ ShellRoot {
       id: emptyWidget
       moduleName: "io.github.ivozzz.devnull"
       bar: fakeBar
-      settings: ({ watch: "", notifyNewPosts: "false", showAvatars: "0", includeReplies: "off" })
+      settings: ({ watch: "", notifyNewPosts: "false", notifySound: "false", showAvatars: "0", includeReplies: "off" })
     }
   }
 
@@ -184,6 +184,17 @@ ShellRoot {
       argv[argv.length - 3] === "--exec" && argv[argv.length - 2] === "omarchy-launch-browser")
 
     shell.expect("nothing to notify about, nothing sent", panel.notifyArgv(Model.unseen([], [])).length === 0)
+
+    // The sound that rides with it. The argv is checked, never run — a test
+    // must not play a sound any more than it may put a toast on the desktop —
+    // and with no notification service on this fake bar the DND check falls
+    // away rather than throwing, which is the path a bar-host change takes.
+    shell.expect("sound on by default", panel.notifySound === true)
+    shell.expect("string false reads as off for the sound", emptyPanel.notifySound === false)
+    shell.expect("sound is the freedesktop message event",
+      panel.soundArgv().join(" ") === "canberra-gtk-play -i message-new-instant", panel.soundArgv().join(" "))
+    shell.expect("sound switched off, nothing to play", emptyPanel.soundArgv().length === 0)
+    shell.expect("no service to ask, the sound still plays", panel.soundArgv().length > 0)
 
     // The composition: a refresh that finds a commit the panel has not seen
     // raises the fresh count, and the same refresh a second time does not.

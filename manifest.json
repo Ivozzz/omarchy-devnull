@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ivozzz.devnull",
   "name": "/dev/null",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": "ivo",
   "license": "MIT",
   "description": "Read-only dev-null.sh commit feed for the Omarchy bar.",
@@ -23,7 +23,8 @@
       "includeReplies": false,
       "refreshMinutes": 5,
       "showAvatars": true,
-      "notifyNewPosts": true
+      "notifyNewPosts": true,
+      "notifySound": true
     },
     "schema": [
       {
@@ -70,6 +71,13 @@
         "label": "Notify on new posts",
         "defaultValue": true,
         "description": "A desktop notification when a developer you watch posts on the Following feed. Skipped while the panel is open, and one notification per batch rather than one per commit."
+      },
+      {
+        "key": "notifySound",
+        "type": "boolean",
+        "label": "Sound on new posts",
+        "defaultValue": true,
+        "description": "Play a sound with that notification, through the sound theme you have active. Silenced by Do Not Disturb together with the notification itself. No effect when \"Notify on new posts\" is off."
       }
     ]
   }

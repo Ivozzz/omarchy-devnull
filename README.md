@@ -64,6 +64,9 @@ watchlist and feed choice live in the widget's own entry in
 - `curl`, for the two read-only endpoints (see "Where each feed comes from"). It
   is run as an argv vector with no shell in between, and its output is parsed as
   data — never executed, never written to a file, never piped into a shell.
+- `canberra-gtk-play` (libcanberra, which Omarchy already pulls in with the
+  freedesktop sound theme), for the notification sound only, and only while
+  `notifySound` is on. Without it the notification still appears, silently.
 - Nothing else: no package manager, no build step, no installer script, no
   service units, and no sudo or pkexec. `quickshell` and the Omarchy shell plugin
   API are provided by Omarchy itself.
@@ -109,12 +112,14 @@ Stored in this widget's entry in `~/.config/omarchy/shell.json`:
 | `refreshMinutes` | `5` | refresh interval, 1–60 |
 | `showAvatars` | `true` | load avatars from GitHub's CDN |
 | `notifyNewPosts` | `true` | desktop notification when a watched developer posts; the bell in the panel writes this |
+| `notifySound` | `true` | play a sound with that notification, through your active sound theme; Do Not Disturb mutes it with the notification |
 
 ```bash
 omarchy bar set io.github.ivozzz.devnull view trending
 omarchy bar set io.github.ivozzz.devnull watch nunomaduro,laravel,php
 omarchy bar set io.github.ivozzz.devnull refreshMinutes 10
 omarchy bar set io.github.ivozzz.devnull notifyNewPosts false
+omarchy bar set io.github.ivozzz.devnull notifySound false
 omarchy bar get io.github.ivozzz.devnull watch
 ```
 
@@ -132,6 +137,11 @@ that happen without you asking:
   watch sends one desktop notification. It is skipped entirely while the panel
   is open, because then the commits are already on screen, and consecutive
   notifications replace one another instead of stacking up.
+- With `notifySound` on as well, that notification is heard: the notification
+  service shows a toast and nothing else, so the plugin plays the freedesktop
+  `message-new-instant` event through your active sound theme with a second
+  command. It is silenced with the toast by Do Not Disturb, and never plays
+  when `notifyNewPosts` is off.
 - A notification names itself `dev-null.sh` rather than borrowing Omarchy's own
   app name. That matters: the notification service lets its own action toasts
   past Do Not Disturb and treats them as throwaway, which is right for "theme
