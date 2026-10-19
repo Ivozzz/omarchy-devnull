@@ -344,6 +344,20 @@ ShellRoot {
             !!scrollArea && !!firstRow && scrollArea.contentY <= firstRow.y && scrollArea.contentY < deep,
             scrollArea && firstRow ? scrollArea.contentY + " vs row y " + firstRow.y : "missing")
 
+          // The lookup box: its text belongs to the content, and the root's
+          // lookupUser() once read searchField from out here, which threw the
+          // moment Enter was pressed. Its own path is exercised through the
+          // empty box (nothing to fetch), and the root function is called
+          // directly too, because a JS call from here surfaces an exception
+          // where a signal handler would only warn.
+          var field = shell.textField(content)
+          shell.expect("the lookup box is there", !!field)
+          field.accepted()
+          shell.expect("an empty lookup fetches nothing", panel.lookingUp === false && panel.lookup === null,
+            "lookingUp " + panel.lookingUp)
+          panel.lookupUser("")
+          shell.expect("the root lookup takes its text as an argument", panel.lookingUp === false)
+
           finish()
         }
 
@@ -383,6 +397,18 @@ ShellRoot {
       if (kids[i] && typeof kids[i].loadedContentHeight === "number") return kids[i].loadedContentHeight
     }
     return -1
+  }
+
+  // The lookup box in the content: the one text field with a placeholder.
+  function textField(item) {
+    var kids = item ? (item.children || []) : []
+    for (var i = 0; i < kids.length; i++) {
+      var kid = kids[i]
+      if (kid && typeof kid.placeholderText === "string" && typeof kid.accepted === "function") return kid
+      var found = textField(kid)
+      if (found) return found
+    }
+    return null
   }
 
   // The commit row for one index: every feed row carries its index.

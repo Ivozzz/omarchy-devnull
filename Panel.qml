@@ -494,8 +494,13 @@ Panel {
   }
 
   // ---- Lookup and watchlist --------------------------------------------
-  function lookupUser() {
-    var name = Model.username(searchField.text)
+  // The username comes in as an argument rather than being read off the lookup
+  // box: that field is part of the panel's lazily built content, in a component
+  // scope of its own, and naming it from here is a runtime ReferenceError —
+  // which is what pressing Enter in an empty box used to do. The content owns
+  // the field and passes its text.
+  function lookupUser(text) {
+    var name = Model.username(text)
     if (name === "") {
       root.lookup = null
       root.lookupMissing = false
@@ -758,7 +763,7 @@ Panel {
               placeholderText: strings.t("search.placeholder", "GitHub username")
               foreground: root.barForeground
               font.family: root.bar.fontFamily
-              onAccepted: root.lookupUser()
+              onAccepted: root.lookupUser(searchField.text)
 
               Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Escape) {
@@ -778,7 +783,7 @@ Panel {
               tooltipText: strings.t("search.action", "Look up")
               onClicked: {
                 searchField.forceActiveFocus()
-                root.lookupUser()
+                root.lookupUser(searchField.text)
               }
 
               RotationAnimator on rotation {
