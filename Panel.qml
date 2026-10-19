@@ -617,7 +617,13 @@ Panel {
   }
 
   function ensureCursorVisible(row) {
-    feedScroll.positionViewAtIndex(root.cursorIndex, ListView.Contain)
+    // The feed's scroll area is built lazily inside the panel's content, in a
+    // component scope of its own: `feedScroll` is not visible here, and naming
+    // it from the panel root is a runtime ReferenceError, not a load error. The
+    // content scrolls its own row and is asked to.
+    var content = panel.loadedContent
+    if (content && typeof content.scrollRowIntoView === "function")
+      content.scrollRowIntoView(row)
   }
 
   // ---- Panel ------------------------------------------------------------
@@ -646,6 +652,27 @@ Panel {
         else if (text === "1") root.setView("following")
         else if (text === "2") root.setView("latest")
         else if (text === "3") root.setView("trending")
+      }
+
+      // Bring one row into the viewport. Defined here, beside the scroll area it
+      // moves, because that area is part of this lazily built content: the
+      // panel root cannot see `feedScroll` (naming it from there is a runtime
+      // ReferenceError), and the root is not a Flickable either. The feed is a
+      // Flickable over a Column rather than a ListView, so there is no
+      // positionViewAtIndex to call — a row's own y is already its offset in
+      // the scrolled content, and scrolling is what turns a cursor move at the
+      // edge into the next row coming up rather than a highlight sliding off.
+      function scrollRowIntoView(row) {
+        if (!row) return
+        var margin = Style.space(12)
+        var top = row.y
+        var bottom = top + row.height
+        if (top < feedScroll.contentY + margin) {
+          feedScroll.contentY = Math.max(0, top - margin)
+        } else if (bottom > feedScroll.contentY + feedScroll.height - margin) {
+          var lowest = Math.max(0, feedScroll.contentHeight - feedScroll.height)
+          feedScroll.contentY = Math.min(lowest, bottom + margin - feedScroll.height)
+        }
       }
 
       Flickable {

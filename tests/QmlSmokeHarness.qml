@@ -263,7 +263,91 @@ ShellRoot {
         })
         shell.expect("the notification switch states its state", bell.length > 0, bell.join("|"))
 
-        finish()
+        // A cursor move scrolls its row into view. The feed is a Flickable over
+        // a Column inside the content component the panel builds lazily, and
+        // the helper that moves it lives there too: the panel root has to ask
+        // the loaded content. A root that reaches for the scroll area by id
+        // instead throws ReferenceError, which aborts this function and fails
+        // the run on the timeout — the bug this covers. Enough rows to overflow
+        // the viewport, so the last one has to move the scroll.
+        var overflow = []
+        for (var j = 0; j < 40; j++) {
+          overflow = overflow.concat(Model.parseCommits(JSON.stringify({ data: [{
+            id: "01a149c3-f76d-703d-ae60-e82d796000" + (j < 10 ? "0" : "") + j,
+            short_hash: "cef762" + j,
+            body: "row " + j + ", to prove a cursor move scrolls the feed",
+            created_at: "2026-10-17T10:00:00Z",
+            stars_count: 40 - j,
+            replies_count: j,
+            author: { username: "brendt", name: "Brent Roose" }
+          }] })))
+        }
+
+        // A row's y means nothing until the column has laid out, and the
+        // panel's own refresh (at load and again when it opens) can land
+        // between layout turns and put its feed — an empty one, with no API
+        // reachable — in place of this. Re-apply until a turn passes untouched.
+        // The panel rate-limits its own refreshes to one a minute, so this
+        // settles after one or two tries; a feed that never settles is a
+        // failure of its own rather than a silently weaker test.
+        var attempts = 0
+        function checkScroll() {
+          attempts++
+          panel.applyFeed(overflow)
+          Qt.callLater(function() {
+            var kept = panel.entries.length === overflow.length
+            for (var i = 0; kept && i < panel.entries.length; i++) {
+              kept = String(panel.entries[i].id).indexOf("01a149c3") === 0
+            }
+            if (!kept) {
+              if (attempts < 8) {
+                checkScroll()
+                return
+              }
+              shell.expect("the harness feed stayed applied", false, String(panel.entries.length))
+              finish()
+              return
+            }
+            assertScroll()
+          })
+        }
+
+        function assertScroll() {
+          // The loaded content is the KeyboardPanel's, one level under the panel
+          // root the harness holds.
+          var content = shell.keyboardPanel(panel).loadedContent
+          var scrollArea = shell.scroller(content)
+          shell.expect("content owns the scroll helper",
+            !!content && typeof content.scrollRowIntoView === "function", content ? "loaded" : "no loaded content")
+          shell.expect("the feed has a scroll area", !!scrollArea)
+
+          // moveCursor() is what the arrow keys call; the root function is also
+          // called outright with the row, which is the call the broken panel
+          // made with an id it could not see.
+          panel.moveCursor(1)
+          for (var k = 0; k < 100; k++) panel.moveCursor(1)
+          shell.expect("the cursor is on the last row", panel.cursorIndex === panel.entries.length - 1,
+            String(panel.cursorIndex))
+          panel.ensureCursorVisible(shell.cursorRow(content, panel.cursorIndex))
+          shell.expect("the cursor row scrolls into view", !!scrollArea && scrollArea.contentY > 0,
+            scrollArea ? String(scrollArea.contentY) : "no scroll area")
+          var deep = scrollArea ? scrollArea.contentY : 0
+
+          // Rewinding has to bring the top back, or the scroll only ever grows.
+          // The first commit row is below the header, so the top is that row's
+          // own y, not zero.
+          panel.moveCursor(-1)
+          for (var m = 0; m < 100; m++) panel.moveCursor(-1)
+          shell.expect("the cursor is back on the first row", panel.cursorIndex === 0, String(panel.cursorIndex))
+          var firstRow = shell.cursorRow(content, 0)
+          shell.expect("the first row is visible again",
+            !!scrollArea && !!firstRow && scrollArea.contentY <= firstRow.y && scrollArea.contentY < deep,
+            scrollArea && firstRow ? scrollArea.contentY + " vs row y " + firstRow.y : "missing")
+
+          finish()
+        }
+
+        checkScroll()
       })
     })
   }
@@ -299,6 +383,31 @@ ShellRoot {
       if (kids[i] && typeof kids[i].loadedContentHeight === "number") return kids[i].loadedContentHeight
     }
     return -1
+  }
+
+  // The commit row for one index: every feed row carries its index.
+  function cursorRow(item, index) {
+    var kids = item ? (item.children || []) : []
+    for (var i = 0; i < kids.length; i++) {
+      var kid = kids[i]
+      if (kid && kid.rowIndex === index && typeof kid.contentY !== "number") return kid
+      var found = cursorRow(kid, index)
+      if (found) return found
+    }
+    return null
+  }
+
+  // The single scroll area in the content: the only item with a contentY and a
+  // contentHeight.
+  function scroller(item) {
+    var kids = item ? (item.children || []) : []
+    for (var i = 0; i < kids.length; i++) {
+      var kid = kids[i]
+      if (kid && typeof kid.contentY === "number" && typeof kid.contentHeight === "number") return kid
+      var found = scroller(kid)
+      if (found) return found
+    }
+    return null
   }
 
   function finish() {
