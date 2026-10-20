@@ -34,3 +34,8 @@ SOFTWARE.
 No Omarchy source is vendored here. The plugin depends on dev-null.sh's public
 read-only API and on nothing else; it is not affiliated with or endorsed by
 dev-null.sh.
+
+The mark in `assets/` is /dev/null's own logo, taken unmodified from
+<https://dev-null.sh/brand> (the "on dark" and "on light" SVG variants) and
+used under the usage rules on that page. It is not covered by this project's
+MIT license.

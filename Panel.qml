@@ -705,13 +705,10 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(8)
 
-              Text {
+              DevNullMark {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "\uf120"  // nf-fa-terminal
-                textFormat: Text.PlainText
-                color: root.barForeground
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.title
+                size: Style.space(20)
+                surroundingColor: root.barForeground
               }
 
               Text {

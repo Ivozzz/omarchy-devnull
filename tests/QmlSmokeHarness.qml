@@ -66,6 +66,21 @@ ShellRoot {
       bar: fakeBar
       settings: ({ watch: "", notifyNewPosts: "false", notifySound: "false", showAvatars: "0", includeReplies: "off" })
     }
+
+    // The brand mark carries one file per background. The variant follows the
+    // label colour it sits next to, because the brand rules rule out tinting
+    // it to the theme.
+    DevNull.DevNullMark {
+      id: markOnDark
+      size: 18
+      surroundingColor: "#a9b1d6"
+    }
+
+    DevNull.DevNullMark {
+      id: markOnLight
+      size: 18
+      surroundingColor: "#1a1b26"
+    }
   }
 
   Timer {
@@ -109,6 +124,14 @@ ShellRoot {
     shell.expect("idle bar text", panel.barText === "–" || panel.barText === "…", panel.barText)
     shell.expect("nothing fresh at rest", panel.hasFresh === false)
     shell.expect("refresh minute clamped", panel.refreshMinutes >= 1 && panel.refreshMinutes <= 60, String(panel.refreshMinutes))
+
+    // The brand mark: light text on a dark bar picks the "on dark" file, and
+    // the mark keeps a size that clears the brand's 16px floor at the default
+    // bar height.
+    shell.expect("mark follows a light label", String(markOnDark.source).indexOf("dev-null-mark-on-dark.svg") !== -1, String(markOnDark.source))
+    shell.expect("mark follows a dark label", String(markOnLight.source).indexOf("dev-null-mark-on-light.svg") !== -1, String(markOnLight.source))
+    shell.expect("mark clears the 16px floor at the default bar",
+      widget.markSize >= 18, String(widget.markSize))
 
     // Markup-shaped input must not reach a Text or a tooltip, whatever sink
     // it lands in.

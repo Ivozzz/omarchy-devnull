@@ -14,6 +14,11 @@ BarWidget {
   readonly property bool opened: panelItem ? panelItem.opened === true : false
   readonly property bool popoutSwitchClosing: panelItem ? panelItem.popoutSwitchClosing === true : false
 
+  // The brand mark takes the place of the old terminal glyph. 72% of the bar
+  // height keeps the two slashes above the brand's 16px floor without the
+  // count beside them shrinking.
+  readonly property real markSize: Math.round(barSize * 0.72)
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -96,14 +101,10 @@ BarWidget {
       anchors.centerIn: parent
       spacing: Style.space(5)
 
-      Text {
+      DevNullMark {
         anchors.verticalCenter: parent.verticalCenter
-        text: "\uf120"  // nf-fa-terminal
-        textFormat: Text.PlainText
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
+        size: root.markSize
+        surroundingColor: button.foreground
       }
 
       Text {
@@ -123,14 +124,10 @@ BarWidget {
       anchors.centerIn: parent
       spacing: Style.space(2)
 
-      Text {
+      DevNullMark {
         anchors.horizontalCenter: parent.horizontalCenter
-        text: "\uf120"  // nf-fa-terminal
-        textFormat: Text.PlainText
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
+        size: root.markSize
+        surroundingColor: button.foreground
       }
 
       Text {
