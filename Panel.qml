@@ -33,6 +33,9 @@ Panel {
   // the fallback lives here too or the widget starts with nothing to read.
   readonly property string defaultWatch: "nunomaduro,brendt,paulinevos,mnapoli"
   readonly property var watchList: Model.watchList(setting("watch", root.defaultWatch))
+  // True when the entry never carried a watchlist of its own, so the four
+  // names are this plugin's examples rather than a choice.
+  readonly property bool watchIsDefault: setting("watch", undefined) === undefined
   readonly property string view: Model.view(setting("view", "following")) || "following"
   readonly property var views: Model.VIEWS
 
@@ -58,7 +61,18 @@ Panel {
     root.viewWritePending = false
     if (root.requestedView === root.view) root.requestedView = ""
     else root.commitView()
-    Qt.callLater(function() { root.refresh(true) })
+    // A different feed is a different list: keeping the old index would
+    // highlight an unrelated row, and keeping the old offset would leave the
+    // viewport somewhere in the middle of it. The old update time belongs to
+    // the old feed too, so the status line waits for this one to land.
+    root.resetCursor()
+    root.lastSuccessMs = 0
+    root.expandedId = ""
+    root.copiedId = ""
+    Qt.callLater(function() {
+      root.scrollFeedToTop()
+      root.refresh(true)
+    })
   }
   readonly property bool includeReplies: root.boolSetting("includeReplies", false)
   readonly property int refreshMinutes: Math.max(1, Math.min(60, parseInt(setting("refreshMinutes", 5), 10) || 5))
@@ -92,10 +106,19 @@ Panel {
   // per watched user, so reopening the panel must not be able to spend the
   // whole budget in a minute.
   property double lastRefreshMs: 0
+  // When the last refresh actually put commits on screen. The status line
+  // under the tabs says so, which is also the only way to tell a feed that is
+  // quiet from one that stopped updating.
+  property double lastSuccessMs: 0
+  // Ages are computed against this instead of Date.now(): a binding that calls
+  // Date.now() directly has no dependency to re-evaluate, so a row would keep
+  // saying "2 minutes ago" until the feed changed. The timer below moves it.
+  property double nowMs: Date.now()
 
   // ---- Lookup state -----------------------------------------------------
   property var lookup: null
   property bool lookupMissing: false
+  property bool lookupInvalid: false
   property bool lookingUp: false
 
   // A log page that came back with no readable feed: a login wall, a
@@ -133,13 +156,21 @@ Panel {
 
   // ---- Bar contract -----------------------------------------------------
   readonly property bool hasFresh: freshCount > 0
-  readonly property string barText: entries.length === 0
-    ? (loading ? "…" : "–")
-    : Commons.I18n.formatNumber(entries.length)
+  // The pill counts what arrived, not what the feed holds: the feed size is
+  // almost always the same number (40), so it read as decoration. With nothing
+  // new, a space keeps WidgetButton painted — it hides itself at empty text —
+  // and the brand mark stands alone.
+  readonly property string barText: {
+    if (root.entries.length === 0)
+      return root.hasFailures ? "!" : (root.loading ? "…" : "–")
+    if (root.freshCount > 0) return "+" + Commons.I18n.formatNumber(root.freshCount)
+    return " "
+  }
   readonly property string tooltipText: root.fill(
     strings.tn("panel.commits", entries.length, "%1 commits"),
     Commons.I18n.formatNumber(entries.length)
   ) + " · " + root.viewLabel(root.view)
+    + (root.hasFailures ? " · " + root.statusText : "")
 
   readonly property string summaryText: {
     var commits = root.fill(
@@ -151,6 +182,32 @@ Panel {
       commits,
       root.fill(strings.tn("panel.fresh", freshCount, "%1 new"), Commons.I18n.formatNumber(freshCount))
     ])
+  }
+
+  // A failure used to be visible only when the whole feed was empty, so two
+  // watched developers timing out while the other two answered looked like a
+  // complete feed. The status line under the tabs reports it either way, and
+  // offers the retry.
+  readonly property bool hasFailures: root.failedUsers.length > 0 || root.viewFailed
+
+  readonly property string statusText: {
+    if (root.viewFailed) return strings.t("panel.unavailable", "This feed could not be read.")
+    if (root.switchingFeed) return strings.t("panel.fetching", "Fetching…")
+
+    var parts = []
+    if (root.lastSuccessMs > 0) {
+      parts.push(root.fill(
+        strings.t("panel.updated", "Updated %1"),
+        root.ageLabelMs(root.lastSuccessMs)
+      ))
+    }
+    if (root.failedUsers.length > 0) {
+      parts.push(root.fill(
+        strings.tn("panel.failed", root.failedUsers.length, "%1 requests failed"),
+        Commons.I18n.formatNumber(root.failedUsers.length)
+      ))
+    }
+    return parts.join(" · ")
   }
 
   function open() {
@@ -179,6 +236,31 @@ Panel {
   function toggle() {
     if (root.opened) root.close()
     else root.openFromHotkey()
+  }
+
+  // The panel keeps its scroll offset and its keyboard cursor between opens:
+  // content stays loaded after the first one. Both belong to a single visit,
+  // so they start clean every time, and the ages are recomputed at the same
+  // moment even if they sat still while the panel was shut.
+  onOpenedChanged: {
+    root.nowMs = Date.now()
+    root.resetCursor()
+    root.expandedId = ""
+    root.copiedId = ""
+    if (root.opened) Qt.callLater(root.scrollFeedToTop)
+  }
+
+  function resetCursor() {
+    root.cursorActive = false
+    root.cursorIndex = -1
+  }
+
+  function scrollFeedToTop() {
+    // The scroll area is inside the lazily built content, which the panel root
+    // cannot name; it is asked to move its own viewport.
+    var content = panel.loadedContent
+    if (content && typeof content.scrollFeedToTop === "function")
+      content.scrollFeedToTop()
   }
 
   function switchPanel(direction) {
@@ -212,6 +294,9 @@ Panel {
     root.lastRefreshMs = now
 
     root.failedUsers = []
+    // A log page that failed to parse must not keep the status line on
+    // "This feed could not be read" after switching back to the watchlist.
+    root.viewFailed = false
     if (root.view !== "following") {
       root.startPageFetch()
       return
@@ -252,6 +337,13 @@ Panel {
   property string requestedView: ""
   property bool viewWritePending: false
   readonly property string stepFrom: requestedView !== "" ? requestedView : view
+  // What the tabs draw. A write is a round trip through shell.json, so the
+  // confirmed `view` lags a click; without this the old tab stays selected
+  // while the new one is already being fetched.
+  readonly property string displayView: requestedView !== "" ? requestedView : view
+  // Rows on screen that belong to the feed being left: they stay readable
+  // while the next one loads, dimmed, instead of pretending to be the new one.
+  readonly property bool switchingFeed: root.loading && root.lastSuccessMs === 0 && root.entries.length > 0
 
   function nextView(step) {
     var names = root.views
@@ -366,6 +458,25 @@ Panel {
     root.applyFeed(Model.mergeCommits(groups, Model.FEED_LIMIT))
   }
 
+  // The status line's retry. On the watchlist it asks only the users whose
+  // request failed, so it does not spend the successful ones again; anything
+  // else (a log page, a feed that never arrived) is refreshed outright.
+  function retry() {
+    if (root.loading) return
+    if (root.view === "following" && root.failedUsers.length > 0) {
+      var users = root.failedUsers.slice()
+      root.failedUsers = []
+      for (var i = 0; i < users.length; i++)
+        root.attempts = root.withKey(root.attempts, users[i], 0)
+      root.pending = users
+      root.loading = true
+      root.lastRefreshMs = Date.now()
+      root.nextUser()
+      return
+    }
+    root.refresh(true)
+  }
+
   // One place decides what a feed means for the rest of the panel: the rows,
   // the count in the bar, what counts as new since the last refresh, and
   // whether that is worth a notification. The first refresh has nothing to
@@ -380,6 +491,7 @@ Panel {
 
     root.entries = commits
     root.freshCount = fresh
+    if (commits.length > 0) root.lastSuccessMs = Date.now()
     if (root.cursorIndex >= commits.length) root.cursorIndex = commits.length - 1
 
     if (wasPrimed) root.maybeNotify(summary)
@@ -488,13 +600,35 @@ Panel {
     }
   }
 
+  // Paused while the panel is open: a background refresh would reorder the
+  // rows under the cursor and the scroll while somebody is reading them. The
+  // timer restarts on close, and triggeredOnStart catches the feed up right
+  // away — the quiet path's one-minute guard still applies.
   Timer {
     id: refreshTimer
     interval: root.refreshMinutes * 60 * 1000
-    running: true
+    running: !root.opened
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()
+  }
+
+  // Moves the clock the age labels read, so "2 minutes ago" becomes "3" while
+  // the panel is open. Only while it is: a closed panel has nobody to show it
+  // to, and this keeps the row bindings from re-evaluating every half minute.
+  Timer {
+    id: ageTimer
+    interval: 30000
+    running: root.opened
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.nowMs = Date.now()
+  }
+
+  Timer {
+    id: copiedReset
+    interval: 1500
+    onTriggered: root.copiedId = ""
   }
 
   Process {
@@ -519,6 +653,7 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         root.lookingUp = false
+        root.lookupInvalid = false
         var profile = Model.parseUser(text)
         // A 404 answers with a message body, not a profile.
         if (!profile) {
@@ -550,10 +685,14 @@ Panel {
   // which is what pressing Enter in an empty box used to do. The content owns
   // the field and passes its text.
   function lookupUser(text) {
-    var name = Model.username(text)
+    // A pasted profile link is the common case; a repo link is not a person,
+    // and silently doing nothing there left the box looking broken.
+    var name = Model.usernameFromInput(text)
     if (name === "") {
       root.lookup = null
       root.lookupMissing = false
+      root.lookingUp = false
+      root.lookupInvalid = String(text === undefined || text === null ? "" : text).trim() !== ""
       return
     }
     var args = Model.fetchArgs(Model.profileApiUrl(name))
@@ -562,6 +701,7 @@ Panel {
     root.lookingUp = true
     root.lookup = null
     root.lookupMissing = false
+    root.lookupInvalid = false
     lookupProc.command = args
     lookupProc.running = true
   }
@@ -616,11 +756,29 @@ Panel {
   }
 
   // ---- Commit actions ---------------------------------------------------
+  // Which row is expanded to its full body, and which one just had its link
+  // copied — a row that answers a right click with nothing looks broken.
+  property string expandedId: ""
+  property string copiedId: ""
+
   function openCommit(entry) {
     // Rebuilt in the model from a validated username and id, so this is a
     // dev-null.sh commit page and nothing else.
     if (!entry || entry.url === "") return
     Util.execArgv(["omarchy-launch-browser", entry.url])
+  }
+
+  // The one thing a read-only feed still needs: the address of a commit, for
+  // pasting into a chat or an issue. wl-copy ships with the clipboard plugin.
+  function copyCommitUrl(entry) {
+    if (!entry || entry.url === "") return
+    Util.execArgv(["wl-copy", "--", entry.url])
+    root.copiedId = entry.id
+    copiedReset.restart()
+  }
+
+  function toggleExpanded(id) {
+    root.expandedId = root.expandedId === id ? "" : id
   }
 
   function openProfile(name) {
@@ -631,7 +789,11 @@ Panel {
 
   // ---- Display helpers --------------------------------------------------
   function ageLabel(iso) {
-    var age = Model.ageUnit(iso, Date.now())
+    return root.ageLabelMs(Date.parse(String(iso === undefined || iso === null ? "" : iso)))
+  }
+
+  function ageLabelMs(ms) {
+    var age = Model.ageUnit(ms, root.nowMs)
     if (!age) return ""
     return root.fill(
       strings.tn("age." + age.unit, age.value, root.ageFallbacks[age.unit]),
@@ -694,7 +856,8 @@ Panel {
     contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(600))
 
     content: PanelKeyCatcher {
-      implicitHeight: feedColumn.implicitHeight
+      id: contentRoot
+      implicitHeight: feedColumn.implicitHeight + hintLine.implicitHeight + Style.space(8)
       anchors.fill: parent
       blocked: searchField.activeFocus
       onMoveRequested: function(dx, dy) {
@@ -720,6 +883,10 @@ Panel {
       // positionViewAtIndex to call — a row's own y is already its offset in
       // the scrolled content, and scrolling is what turns a cursor move at the
       // edge into the next row coming up rather than a highlight sliding off.
+      function scrollFeedToTop() {
+        feedScroll.contentY = 0
+      }
+
       function scrollRowIntoView(row) {
         if (!row) return
         var margin = Style.space(12)
@@ -735,7 +902,11 @@ Panel {
 
       Flickable {
         id: feedScroll
-        anchors.fill: parent
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: hintLine.top
+        anchors.bottomMargin: Style.space(8)
         contentWidth: width
         contentHeight: feedColumn.implicitHeight
         clip: true
@@ -815,11 +986,27 @@ Panel {
               font.family: root.bar.fontFamily
               onAccepted: root.lookupUser(searchField.text)
 
+              // The key catcher is blocked while this field has focus, so Esc
+              // has to hand focus back itself instead of just emptying the
+              // box and leaving the user stuck in it.
               Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Escape) {
-                  searchField.text = ""
-                  root.lookup = null
-                  root.lookupMissing = false
+                  if (searchField.text !== "") {
+                    searchField.text = ""
+                    root.lookup = null
+                    root.lookupMissing = false
+                    root.lookupInvalid = false
+                  } else {
+                    contentRoot.forceActiveFocus()
+                  }
+                  event.accepted = true
+                  return
+                }
+                // Down leaves the box and starts walking the feed where the
+                // eye already is, instead of requiring a click.
+                if (event.key === Qt.Key_Down || event.key === Qt.Key_Up) {
+                  contentRoot.forceActiveFocus()
+                  root.moveCursor(event.key === Qt.Key_Down ? 1 : -1)
                   event.accepted = true
                 }
               }
@@ -863,7 +1050,7 @@ Panel {
           // ---- Profile card for a looked-up user ----------------------
           Rectangle {
             id: profileCard
-            visible: !!root.lookup || root.lookupMissing
+            visible: root.lookingUp || root.lookupInvalid || !!root.lookup || root.lookupMissing
             width: parent.width
             implicitHeight: profileColumn.implicitHeight + Style.space(16)
             radius: Style.cornerRadius
@@ -876,6 +1063,28 @@ Panel {
               anchors.top: parent.top
               anchors.margins: Style.space(10)
               spacing: Style.space(6)
+
+              Text {
+                width: parent.width
+                visible: root.lookingUp
+                text: strings.t("search.looking", "Looking up…")
+                textFormat: Text.PlainText
+                color: Qt.darker(root.barForeground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.italic: true
+              }
+
+              Text {
+                width: parent.width
+                visible: root.lookupInvalid
+                text: strings.t("search.invalid", "That is not a GitHub username or a profile link.")
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: Qt.darker(root.barForeground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
 
               Text {
                 width: parent.width
@@ -962,8 +1171,52 @@ Panel {
             }
           }
 
+          // ---- Watching ------------------------------------------------
+          // The watchlist used to be invisible: the only way to remove
+          // somebody was to find them again in the lookup box. The chips make
+          // it a list you can see, open, and prune.
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.watchList.length > 0
+
+            PanelSectionHeader {
+              text: root.fill(strings.t("watch.title", "Watching %1/%2"), [
+                Commons.I18n.formatNumber(root.watchList.length),
+                Commons.I18n.formatNumber(Model.WATCH_LIMIT)
+              ])
+              foreground: root.barForeground
+              fontFamily: root.bar.fontFamily
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                model: root.watchList
+
+                WatchChip {
+                  required property var modelData
+                  user: String(modelData)
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.watchIsDefault
+              text: strings.t("watch.hint", "These four are examples — look up a username above to build your own list.")
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Qt.darker(root.barForeground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
           PanelSeparator {
-            visible: root.entries.length > 0
+            visible: root.watchList.length > 0 || root.entries.length > 0
             foreground: root.barForeground
           }
 
@@ -981,9 +1234,41 @@ Panel {
               ViewTab {
                 required property var modelData
                 viewName: modelData
-                activeView: root.view
+                activeView: root.displayView
                 onPicked: root.pickView(modelData)
               }
+            }
+          }
+
+          // ---- Status -------------------------------------------------
+          // How old the feed is, and whether part of it is missing. Both used
+          // to be invisible whenever rows were on screen: a refresh that lost
+          // two users out of four still looked like a complete feed.
+          Row {
+            id: statusRow
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.lastSuccessMs > 0 || root.hasFailures || root.switchingFeed
+
+            Text {
+              width: Math.max(0, parent.width - (statusRetry.visible ? statusRetry.width + statusRow.spacing : 0))
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.statusText
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: root.hasFailures ? Commons.Color.accent : Qt.darker(root.barForeground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            PanelActionButton {
+              id: statusRetry
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.hasFailures
+              iconText: "\uf01e"  // nf-fa-repeat
+              foreground: Commons.Color.accent
+              tooltipText: strings.t("action.retry", "Retry")
+              onClicked: root.retry()
             }
           }
 
@@ -1024,23 +1309,73 @@ Panel {
             font.italic: true
           }
 
-          Text {
-            width: parent.width
-            visible: root.entries.length === 0 && !root.loading && (root.viewFailed || root.failedUsers.length > 0)
-            text: root.view === "following"
-              ? root.fill(
-                  strings.tn("panel.failed", root.failedUsers.length, "%1 requests failed"),
-                  Commons.I18n.formatNumber(root.failedUsers.length)
-                )
-              : strings.t("panel.unavailable", "This feed could not be read.")
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: Qt.darker(root.barForeground, 1.4)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.bodySmall
-          }
         }
       }
+
+      // Keys nobody finds by accident. Outside the Flickable, so the line
+      // stays put while the feed scrolls under it.
+      Text {
+        id: hintLine
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        text: strings.t("panel.hints", "↵ open · r refresh · / search · 1–3 feeds · Esc close")
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        horizontalAlignment: Text.AlignRight
+        color: Qt.darker(root.barForeground, 1.65)
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // One watched person: a chip that opens their profile, with the remove
+  // action on its right edge.
+  component WatchChip: Rectangle {
+    id: watchChip
+    required property string user
+
+    readonly property bool hot: chipArea.containsMouse
+
+    width: chipLabel.implicitWidth + chipRemove.width + Style.space(12)
+    height: Style.space(26)
+    radius: Style.cornerRadius
+    color: watchChip.hot ? Style.hoverFillFor(root.barForeground, Commons.Color.accent) : "transparent"
+    border.width: Style.normalBorderWidth
+    border.color: Qt.darker(root.barForeground, 1.6)
+
+    Text {
+      id: chipLabel
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(7)
+      anchors.verticalCenter: parent.verticalCenter
+      text: "@" + watchChip.user
+      textFormat: Text.PlainText
+      color: root.barForeground
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+
+    PanelActionButton {
+      id: chipRemove
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: "\uf00d"  // nf-fa-times
+      foreground: Qt.darker(root.barForeground, 1.4)
+      tooltipText: root.fill(strings.t("watch.remove", "Stop watching @%1"), watchChip.user)
+      onClicked: root.toggleWatch(watchChip.user)
+    }
+
+    MouseArea {
+      id: chipArea
+      anchors.left: parent.left
+      anchors.right: chipRemove.left
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.openProfile(watchChip.user)
     }
   }
 
@@ -1102,11 +1437,18 @@ Panel {
     required property var entry
     required property int rowIndex
 
+    readonly property bool expanded: root.expandedId === commitRow.entry.id
+
     hasCursor: root.cursorActive && root.cursorIndex === rowIndex
     onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(commitRow)
     foreground: root.barForeground
     fill: Style.hoverFillFor(root.barForeground, Commons.Color.accent)
     implicitHeight: rowLayout.implicitHeight + Style.space(12)
+    opacity: root.switchingFeed ? 0.45 : 1
+
+    Behavior on opacity {
+      NumberAnimation { duration: Style.duration(140); easing.type: Easing.OutCubic }
+    }
 
     Row {
       id: rowLayout
@@ -1114,7 +1456,7 @@ Panel {
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       anchors.leftMargin: Style.space(6)
-      anchors.rightMargin: Style.space(6)
+      anchors.rightMargin: Style.space(6) + expandButton.width
       spacing: Style.space(10)
 
       SizedImage {
@@ -1175,6 +1517,19 @@ Panel {
             font.italic: true
             anchors.verticalCenter: parent.verticalCenter
           }
+
+          // The right click answered, so the row says what it did. Without
+          // this a copy and a missed click looked the same.
+          Text {
+            visible: root.copiedId === commitRow.entry.id
+            text: strings.t("row.copied", "copied")
+            textFormat: Text.PlainText
+            color: Commons.Color.accent
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            font.italic: true
+            anchors.verticalCenter: parent.verticalCenter
+          }
         }
 
         Text {
@@ -1182,8 +1537,11 @@ Panel {
           text: root.excerpt(commitRow.entry)
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
-          maximumLineCount: 3
-          elide: Text.ElideRight
+          // Expanded, the row shows the body the feed already carries; the
+          // cap is only there so a pathological commit cannot make one row
+          // taller than the panel.
+          maximumLineCount: commitRow.expanded ? 40 : 3
+          elide: commitRow.expanded ? Text.ElideNone : Text.ElideRight
           color: Qt.darker(root.barForeground, 1.15)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
@@ -1214,15 +1572,40 @@ Panel {
       }
     }
 
+    // The body stays in the panel: clicking the row still opens the commit,
+    // while this chevron reads the whole thing in place. z keeps it above the
+    // row's MouseArea, which covers the rest of the surface.
+    PanelActionButton {
+      id: expandButton
+      z: 2
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(3)
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(6)
+      iconText: commitRow.expanded ? "\uf077" : "\uf078"  // chevron up / down
+      foreground: Qt.darker(root.barForeground, 1.4)
+      tooltipText: commitRow.expanded
+        ? strings.t("row.collapse", "Collapse")
+        : strings.t("row.expand", "Show full commit")
+      onClicked: root.toggleExpanded(commitRow.entry.id)
+    }
+
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
       onContainsMouseChanged: if (containsMouse) {
         root.cursorActive = true
         root.cursorIndex = commitRow.rowIndex
       }
-      onClicked: root.openCommit(commitRow.entry)
+      // Left opens the commit, middle the author's profile, right copies the
+      // link — the feed is read-only, and that is the useful trio.
+      onClicked: function(mouse) {
+        if (mouse.button === Qt.MiddleButton) root.openProfile(commitRow.entry.authorUsername)
+        else if (mouse.button === Qt.RightButton) root.copyCommitUrl(commitRow.entry)
+        else root.openCommit(commitRow.entry)
+      }
     }
   }
 }

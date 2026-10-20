@@ -84,11 +84,15 @@ BarWidget {
     foreground: panelItem ? panelItem.barForeground : (root.bar ? root.bar.barForeground : Color.foreground)
     fontSize: Style.font.caption
     horizontalMargin: Style.space(6)
-    // Accent only while something arrived since the last refresh: the number is
-    // always the size of the merged feed, so a quiet panel and a busy one look
-    // the same by accident otherwise.
-    active: panelItem ? panelItem.hasFresh : false
-    activeColor: Commons.Color.accent
+    // Accent for something new, urgent for a feed that could not be read at
+    // all: an empty pill and a failed one used to look the same. A refresh
+    // that lost one user out of four keeps the ordinary pill — the panel's
+    // status line is where that belongs.
+    active: panelItem
+      ? (panelItem.hasFresh === true
+        || (panelItem.entries.length === 0 && panelItem.hasFailures === true))
+      : false
+    activeColor: panelItem && panelItem.hasFailures === true ? Commons.Color.urgent : Commons.Color.accent
     tooltipText: panelItem ? panelItem.tooltipText : "…"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.refresh()

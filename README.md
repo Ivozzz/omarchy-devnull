@@ -11,13 +11,25 @@ write access.
   - **Following** — the merged commit log of the developers you watch
   - **Latest** — everything on the site, newest first
   - **Trending** — the site's own ranking
-- A bar pill showing how many commits are in the current feed. It turns accent
-  coloured while something new has arrived since the last refresh.
+- A bar pill showing what has arrived since the last refresh (`+3`) in the
+  accent colour, and just the brand mark when nothing has. A refresh that could
+  not be read shows a warning instead of an empty feed, and the tooltip says
+  why.
 - A panel listing the commits: avatar, handle, short hash, age, up to three
   lines of the commit, and its star and reply counts. A row opens on dev-null.sh
-  in the browser.
-- A lookup box: type any GitHub username to see their profile (commit and
-  follower counts) and to add or remove them from your watchlist.
+  in the browser; middle click opens the author, right click copies the commit
+  link, and the chevron expands the row to the whole commit without leaving the
+  panel.
+- A status line under the feed tabs: how old the feed is, how many watched users
+  failed, and a retry that asks only the ones that did. The line is there even
+  while rows are on screen, so a partial refresh cannot pass for a complete one.
+- A lookup box: type any GitHub username, or paste a profile link from GitHub or
+  dev-null.sh, to see their profile (commit and follower counts) and to add or
+  remove them from your watchlist. A link to a repository, or anything else that
+  is not a profile, says so instead of doing nothing.
+- The watchlist itself as a row of chips: one click opens a profile, the ×
+  removes somebody. Until you write a list of your own, the four default names
+  are marked as examples.
 - **A desktop notification when somebody you watch posts.** It names them,
   carries the first line of the commit, and opens the commit when clicked. One
   notification per batch rather than one per commit, never while the panel is
@@ -67,6 +79,8 @@ watchlist and feed choice live in the widget's own entry in
 - `canberra-gtk-play` (libcanberra, which Omarchy already pulls in with the
   freedesktop sound theme), for the notification sound only, and only while
   `notifySound` is on. Without it the notification still appears, silently.
+- `wl-copy` (wl-clipboard, which Omarchy ships with its clipboard plugin), for
+  the right-click copy of a commit link. Without it that action does nothing.
 - Nothing else: no package manager, no build step, no installer script, no
   service units, and no sudo or pkexec. `quickshell` and the Omarchy shell plugin
   API are provided by Omarchy itself.
@@ -132,7 +146,8 @@ that happen without you asking:
 
 - Every `refreshMinutes`, it fetches the current feed. Nothing is stored: the
   feed, and the list of commit ids already counted as seen, live in memory for
-  the shell session only.
+  the shell session only. The timer pauses while the panel is open, so a
+  refresh cannot reorder the rows under the cursor, and catches up on close.
 - With `notifyNewPosts` on, a refresh that finds new commits from somebody you
   watch sends one desktop notification. It is skipped entirely while the panel
   is open, because then the commits are already on screen, and consecutive
@@ -161,6 +176,9 @@ omarchy bar set io.github.ivozzz.devnull notifyNewPosts false
 |---|---|
 | click the pill | open or close the panel |
 | middle click the pill | refresh now |
+| middle click a row | open the author's profile |
+| right click a row | copy the commit link |
+| chevron on a row | read the whole commit in place |
 | `1` `2` `3` | Following / Latest / Trending |
 | `←` / `→` | previous / next feed |
 | `↑` / `↓` | move the row cursor |
@@ -169,6 +187,10 @@ omarchy bar set io.github.ivozzz.devnull notifyNewPosts false
 | `/` | jump to the lookup box |
 | `Tab` | hand the popup to the next bar panel |
 | `Esc` | close |
+
+The same keys are printed along the bottom of the panel. From the lookup box,
+`↓` starts walking the feed and `Esc` hands focus back there first — a second
+`Esc` closes the panel.
 
 ## Privacy and safety
 

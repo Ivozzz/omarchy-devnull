@@ -249,9 +249,10 @@ ShellRoot {
     shell.expect("priming does not count as fresh", panel.freshCount === 0, String(panel.freshCount))
     panel.applyFeed(page.concat(freshFeed))
     shell.expect("a new commit counts once", panel.freshCount === 1, String(panel.freshCount))
-    shell.expect("the pill counts it", panel.barText === "2", panel.barText)
+    shell.expect("the pill counts it", panel.barText === "+1", panel.barText)
     panel.applyFeed(page.concat(freshFeed))
     shell.expect("the same refresh again counts nothing", panel.freshCount === 0, String(panel.freshCount))
+    shell.expect("a quiet pill shows no count", panel.barText === " ", JSON.stringify(panel.barText))
     shell.expect("no click target without a url",
       panel.notifyArgv({count: 1, authors: ["brendt"], authorCount: 1, newest: {body: "x", url: ""}}).indexOf("--exec") === -1)
 
@@ -281,7 +282,48 @@ ShellRoot {
       Qt.callLater(function() {
         var after = shell.contentHeight(panel)
         shell.expect("rows laid out", after > before + 200, before + " -> " + after)
-        shell.expect("bar text counts the feed", panel.barText === "6", panel.barText)
+        shell.expect("the pill counts what arrived", panel.barText === "+6", panel.barText)
+
+        // The status line is the only place a partially failed refresh was
+        // ever visible; it also carries how old the feed is. Both are checked
+        // as plain text, like every other sink.
+        shell.expect("status reports the update",
+          panel.lastSuccessMs > 0 && panel.statusText.length > 0, panel.statusText)
+        var beforeFailures = panel.failedUsers
+        panel.failedUsers = ["ghost"]
+        shell.expect("partial failures are reported",
+          panel.hasFailures && panel.statusText.indexOf("<") === -1, panel.statusText)
+
+        // A feed that never arrived used to look exactly like an empty one in
+        // the bar. It now shows a warning, and the tooltip carries the reason.
+        var beforeEntries = panel.entries
+        var beforeSuccess = panel.lastSuccessMs
+        panel.entries = []
+        shell.expect("a failed feed shows a warning in the pill", panel.barText === "!", panel.barText)
+        shell.expect("the tooltip explains the failure",
+          panel.tooltipText.indexOf("<") === -1 && panel.tooltipText.length > 0, panel.tooltipText)
+        panel.entries = beforeEntries
+        panel.failedUsers = beforeFailures
+
+        // While another feed is loading over the rows still on screen, the
+        // status says so and the rows dim rather than passing for the new feed.
+        panel.loading = true
+        panel.lastSuccessMs = 0
+        shell.expect("a feed switch says it is fetching", panel.switchingFeed)
+        panel.loading = false
+        panel.lastSuccessMs = beforeSuccess
+
+        // The rows read their age against nowMs, so a moving clock moves the
+        // label; a Date.now() call inside the binding would freeze it.
+        var wasNow = panel.nowMs
+        var then = Date.parse("2026-10-17T12:00:00Z")
+        var commitAt = then - 120000
+        panel.nowMs = then
+        var ageBefore = panel.ageLabelMs(commitAt)
+        panel.nowMs = then + 60000
+        shell.expect("the age label follows the clock",
+          panel.ageLabelMs(commitAt) !== ageBefore, ageBefore)
+        panel.nowMs = wasNow
 
         // The three tab labels are in the built content. Their text depends on
         // the shell's language, so they are matched by name in both
@@ -297,6 +339,39 @@ ShellRoot {
           return /mute|muted|silenz|riattiv/i.test(String(value))
         })
         shell.expect("the notification switch states its state", bell.length > 0, bell.join("|"))
+
+        // The watchlist is a visible, prunable list now, not only a setting.
+        var built = shell.keyboardPanel(panel).loadedContent
+        var builtTexts = shell.texts(built)
+        var watching = builtTexts.filter(function(value) {
+          return /^(watching|segui)\s+4\/12$/i.test(String(value).trim())
+        })
+        shell.expect("the watchlist is drawn", watching.length === 1, watching.join("|"))
+        shell.expect("a watched user is a chip", builtTexts.some(function(value) {
+          return String(value).trim() === "@mnapoli"
+        }), builtTexts.join("|"))
+
+        // A pasted repo link is not a person. It says so instead of doing
+        // nothing, and never spends a request.
+        panel.lookupUser("github.com/nunomaduro/laravel")
+        shell.expect("a repo link is not a profile",
+          panel.lookupInvalid === true && panel.lookingUp === false)
+        panel.lookupUser("")
+        shell.expect("an empty lookup clears the error", panel.lookupInvalid === false)
+
+        // A row can be read in place, and a row without a URL has nothing to
+        // copy — the copy action is checked as a call, never executed, so the
+        // test cannot touch the clipboard.
+        shell.expect("a row can be expanded in place", builtTexts.some(function(value) {
+          return /show full commit|mostra tutto/i.test(String(value))
+        }), builtTexts.join("|"))
+        var rowId = panel.entries.length > 0 ? panel.entries[0].id : ""
+        panel.toggleExpanded(rowId)
+        shell.expect("the chevron expands that row", panel.expandedId === rowId, panel.expandedId)
+        panel.toggleExpanded(rowId)
+        shell.expect("the chevron collapses it", panel.expandedId === "", panel.expandedId)
+        panel.copyCommitUrl({ id: "x", url: "" })
+        shell.expect("a row with no url copies nothing", panel.copiedId === "", panel.copiedId)
 
         // A cursor move scrolls its row into view. The feed is a Flickable over
         // a Column inside the content component the panel builds lazily, and
@@ -354,6 +429,8 @@ ShellRoot {
           var scrollArea = shell.scroller(content)
           shell.expect("content owns the scroll helper",
             !!content && typeof content.scrollRowIntoView === "function", content ? "loaded" : "no loaded content")
+          shell.expect("content owns the top helper",
+            !!content && typeof content.scrollFeedToTop === "function", content ? "loaded" : "no loaded content")
           shell.expect("the feed has a scroll area", !!scrollArea)
 
           // moveCursor() is what the arrow keys call; the root function is also
@@ -379,6 +456,12 @@ ShellRoot {
             !!scrollArea && !!firstRow && scrollArea.contentY <= firstRow.y && scrollArea.contentY < deep,
             scrollArea && firstRow ? scrollArea.contentY + " vs row y " + firstRow.y : "missing")
 
+          // A reopening panel starts at the top, and the helper it asks is the
+          // content's, like the cursor one.
+          panel.scrollFeedToTop()
+          shell.expect("the feed scrolls back to the top", !!scrollArea && scrollArea.contentY === 0,
+            scrollArea ? String(scrollArea.contentY) : "no scroll area")
+
           // The lookup box: its text belongs to the content, and the root's
           // lookupUser() once read searchField from out here, which threw the
           // moment Enter was pressed. Its own path is exercised through the
@@ -392,6 +475,14 @@ ShellRoot {
             "lookingUp " + panel.lookingUp)
           panel.lookupUser("")
           shell.expect("the root lookup takes its text as an argument", panel.lookingUp === false)
+
+          // The cursor belongs to one visit: content stays loaded between
+          // opens, so a stale index would highlight a row on a feed the user
+          // has not looked at yet.
+          panel.close()
+          panel.open()
+          shell.expect("the cursor does not survive a close",
+            panel.cursorIndex === -1 && panel.cursorActive === false, String(panel.cursorIndex))
 
           finish()
         }

@@ -77,6 +77,28 @@ test("username rejects anything that could leave the path", () => {
   }
 })
 
+test("usernameFromInput takes a username or a profile link", () => {
+  assert.equal(Model.usernameFromInput("nunomaduro"), "nunomaduro")
+  assert.equal(Model.usernameFromInput(" @brendt "), "brendt")
+  assert.equal(Model.usernameFromInput("https://github.com/nunomaduro"), "nunomaduro")
+  assert.equal(Model.usernameFromInput("github.com/nunomaduro/"), "nunomaduro")
+  assert.equal(Model.usernameFromInput("https://www.github.com/nunomaduro?tab=repos"), "nunomaduro")
+  assert.equal(Model.usernameFromInput("https://dev-null.sh/@nunomaduro"), "nunomaduro")
+  assert.equal(Model.usernameFromInput("https://dev-null.sh/@nunomaduro?x=1"), "nunomaduro")
+})
+
+test("usernameFromInput refuses anything that is not a profile", () => {
+  for (const value of [
+    "",
+    "github.com/nunomaduro/laravel",
+    "https://github.com/orgs/laravel",
+    "https://evil.example/@nunomaduro",
+    "nuno maduro",
+  ]) {
+    assert.equal(Model.usernameFromInput(value), "", `should reject ${JSON.stringify(value)}`)
+  }
+})
+
 // ---- URLs ----------------------------------------------------------------
 
 test("commitUrl is rebuilt from the validated parts, not the response", () => {
@@ -331,6 +353,12 @@ test("ageUnit picks the right unit", () => {
   assert.deepEqual(at("2026-06-01T12:00:00Z"), { unit: "months", value: 4 })
   assert.equal(at("not a date"), null)
   assert.equal(at(undefined), null)
+})
+
+test("ageUnit accepts a millisecond timestamp", () => {
+  const now = Date.parse("2026-10-17T12:00:00Z")
+  assert.deepEqual(Model.ageUnit(now - 90000, now), { unit: "minutes", value: 1 })
+  assert.equal(Model.ageUnit(NaN, now), null)
 })
 
 test("ageUnit never reports a negative age", () => {

@@ -129,6 +129,21 @@ function username(value) {
   return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(s) ? s : "";
 }
 
+// What a person might paste into the lookup box: a username, @username, or a
+// profile URL copied out of the address bar on GitHub or dev-null.sh. A repo,
+// commit, or any other path is not a profile and yields nothing.
+function usernameFromInput(value) {
+  var s = String(value === undefined || value === null ? "" : value).trim();
+  if (s === "") return "";
+
+  var direct = username(s);
+  if (direct !== "") return direct;
+
+  var bare = s.replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+  var match = /^(?:github\.com|dev-null\.sh)\/(?:@)?([A-Za-z0-9][A-Za-z0-9-]{0,38})\/?(?:[?#].*)?$/i.exec(bare);
+  return match ? username(match[1]) : "";
+}
+
 // A commit id as dev-null.sh issues it (a UUIDv7: hex and dashes only).
 function commitId(value) {
   var s = line(value, LIMITS.id);
@@ -387,7 +402,9 @@ function excerpt(body, limit) {
 // Coarse age for a row timestamp. The unit comes back rather than a finished
 // string, so the panel can render it in the shell's language.
 function ageUnit(iso, nowMs) {
-  var ms = Date.parse(String(iso === undefined || iso === null ? "" : iso));
+  // An ISO string from a commit, or a millisecond timestamp the panel keeps
+  // for "updated 2 minutes ago".
+  var ms = typeof iso === "number" ? iso : Date.parse(String(iso === undefined || iso === null ? "" : iso));
   if (isNaN(ms)) return null;
 
   var now = typeof nowMs === "number" && !isNaN(nowMs) ? nowMs : Date.now();
@@ -485,6 +502,7 @@ if (typeof module !== "undefined") {
     count: count,
     parse: parse,
     username: username,
+    usernameFromInput: usernameFromInput,
     commitId: commitId,
     timestamp: timestamp,
     avatarUrl: avatarUrl,
