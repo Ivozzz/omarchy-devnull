@@ -159,6 +159,18 @@ ShellRoot {
     // ---- Views ---------------------------------------------------------
     shell.expect("default view", panel.view === "following", panel.view)
     shell.expect("three views", panel.views.length === 3, String(panel.views.length))
+    // Left and right step through the tabs and wrap at both ends. The step is
+    // checked on its own: applying it would write shell.json.
+    shell.expect("right steps to the next feed", panel.nextView(1) === "latest", panel.nextView(1))
+    shell.expect("left steps to the previous feed", panel.nextView(-1) === "trending", panel.nextView(-1))
+    shell.expect("the feed cycle wraps", panel.nextView(3) === "following", panel.nextView(3))
+    // While a step's write is out, the next step starts from that request, not
+    // from the tab the bar has not confirmed yet — otherwise a held arrow key
+    // would keep landing on the same feed.
+    panel.requestedView = "trending"
+    shell.expect("a step continues from the last request",
+      panel.nextView(1) === "following", panel.nextView(1))
+    panel.requestedView = ""
     shell.expect("following has no log page", Model.logUrl("following") === "")
     shell.expect("log urls", Model.logUrl("latest") === "https://dev-null.sh/log/latest"
       && Model.logUrl("trending") === "https://dev-null.sh/log/trending")

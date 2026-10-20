@@ -6,8 +6,8 @@ write access.
 
 ## What it does
 
-- Three feeds, switchable from the panel or with `1` `2` `3`, named after the
-  site's own log tabs:
+- Three feeds, switchable from the panel or with `1` `2` `3` and the left and
+  right arrows, named after the site's own log tabs:
   - **Following** — the merged commit log of the developers you watch
   - **Latest** — everything on the site, newest first
   - **Trending** — the site's own ranking
@@ -162,6 +162,7 @@ omarchy bar set io.github.ivozzz.devnull notifyNewPosts false
 | click the pill | open or close the panel |
 | middle click the pill | refresh now |
 | `1` `2` `3` | Following / Latest / Trending |
+| `←` / `→` | previous / next feed |
 | `↑` / `↓` | move the row cursor |
 | `Enter` | open the selected commit |
 | `r` | refresh |

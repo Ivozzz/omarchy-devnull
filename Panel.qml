@@ -52,7 +52,14 @@ Panel {
 
   // A view changed from anywhere — a tab click or `omarchy bar set` — refills
   // the feed straight away instead of leaving the old one up until the timer.
-  onViewChanged: Qt.callLater(function() { root.refresh(true) })
+  // It is also the answer to a step the arrows asked for: clear it once the bar
+  // confirms, or write the step that arrived while this one was out.
+  onViewChanged: {
+    root.viewWritePending = false
+    if (root.requestedView === root.view) root.requestedView = ""
+    else root.commitView()
+    Qt.callLater(function() { root.refresh(true) })
+  }
   readonly property bool includeReplies: root.boolSetting("includeReplies", false)
   readonly property int refreshMinutes: Math.max(1, Math.min(60, parseInt(setting("refreshMinutes", 5), 10) || 5))
   readonly property bool showAvatars: root.boolSetting("showAvatars", true)
@@ -231,6 +238,49 @@ Panel {
     var next = Model.view(name)
     if (next === "" || next === root.view) return
     Util.execArgv(["omarchy-bar", "set", "io.github.ivozzz.devnull", "view", next])
+  }
+
+  // Left and right step through the tabs in the order they are drawn, wrapping
+  // at either end: Following, Latest, Trending and back.
+  //
+  // A step is saved through shell.json like a tab click, but that is a round
+  // trip — the CLI writes the file, the bar reads it back — and a held arrow
+  // key outruns it: every press would step from the tab it just left and land
+  // on the same one. So the step is taken from the last request rather than
+  // from the confirmed view, and while one write is out only the newest
+  // request is kept, written when the bar answers.
+  property string requestedView: ""
+  property bool viewWritePending: false
+  readonly property string stepFrom: requestedView !== "" ? requestedView : view
+
+  function nextView(step) {
+    var names = root.views
+    if (names.length === 0 || step === 0) return root.stepFrom
+    var index = names.indexOf(root.stepFrom)
+    if (index < 0) index = 0
+    return names[(((index + step) % names.length) + names.length) % names.length]
+  }
+
+  function cycleView(step) {
+    var next = root.nextView(step)
+    if (next === root.stepFrom) return
+    root.requestedView = next
+    root.commitView()
+  }
+
+  function commitView() {
+    if (root.viewWritePending) return
+    if (root.requestedView === "" || root.requestedView === root.view) return
+    root.viewWritePending = true
+    root.setView(root.requestedView)
+  }
+
+  // A click on a tab is an absolute choice, not a step: it drops whatever the
+  // arrows still had waiting to be written.
+  function pickView(name) {
+    root.requestedView = ""
+    root.viewWritePending = false
+    root.setView(name)
   }
 
   function viewLabel(name) {
@@ -647,16 +697,19 @@ Panel {
       implicitHeight: feedColumn.implicitHeight
       anchors.fill: parent
       blocked: searchField.activeFocus
-      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
+      onMoveRequested: function(dx, dy) {
+        if (dy !== 0) root.moveCursor(dy)
+        else if (dx !== 0) root.cycleView(dx)
+      }
       onActivateRequested: root.activateCursor()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
         if (text === "r" || text === "R") root.refresh(true)
         else if (text === "/") searchField.forceActiveFocus()
-        else if (text === "1") root.setView("following")
-        else if (text === "2") root.setView("latest")
-        else if (text === "3") root.setView("trending")
+        else if (text === "1") root.pickView("following")
+        else if (text === "2") root.pickView("latest")
+        else if (text === "3") root.pickView("trending")
       }
 
       // Bring one row into the viewport. Defined here, beside the scroll area it
@@ -929,7 +982,7 @@ Panel {
                 required property var modelData
                 viewName: modelData
                 activeView: root.view
-                onPicked: root.setView(modelData)
+                onPicked: root.pickView(modelData)
               }
             }
           }
