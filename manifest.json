@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ivozzz.devnull",
   "name": "/dev/null",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "author": "ivo",
   "license": "MIT",
   "description": "Read-only dev-null.sh commit feed for the Omarchy bar.",
@@ -47,7 +47,7 @@
         "type": "boolean",
         "label": "Include replies",
         "defaultValue": false,
-        "description": "Fetch each user's replies as well as their top-level commits."
+        "description": "Fetch each user's replies as well as their top-level commits. The API keeps them in two lists, so this costs a second request per watched user."
       },
       {
         "key": "refreshMinutes",
@@ -57,7 +57,7 @@
         "max": 60,
         "step": 1,
         "defaultValue": 5,
-        "description": "The public API allows 60 requests per minute per IP; one refresh costs one request per watched user."
+        "description": "The public API allows 60 requests per minute per IP; one refresh costs one request per watched user, two when replies are included."
       },
       {
         "key": "showAvatars",

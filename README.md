@@ -11,10 +11,11 @@ write access.
   - **Following** — the merged commit log of the developers you watch
   - **Latest** — everything on the site, newest first
   - **Trending** — the site's own ranking
-- A bar pill showing what has arrived since the last refresh (`+3`) in the
-  accent colour, and just the brand mark when nothing has. A refresh that could
-  not be read shows a warning instead of an empty feed, and the tooltip says
-  why.
+- A bar pill showing what has arrived since the last refresh of that feed
+  (`+3`) in the accent colour, and just the brand mark when nothing has. Each
+  feed keeps its own count, so a commit first read on Latest is still news on
+  the watchlist. A refresh that could not be read shows a warning instead of an
+  empty feed, and the tooltip says why.
 - A panel listing the commits: avatar, handle, short hash, age, up to three
   lines of the commit, and its star and reply counts. A row opens on dev-null.sh
   in the browser; middle click opens the author, right click copies the commit
@@ -38,7 +39,7 @@ write access.
 - English and Italian catalogs, following Setup > Language like the built-in
   plugins.
 
-![The panel, on the Latest feed](preview.png)
+![The panel, on the Following feed](preview.png)
 
 ## Install
 
@@ -94,12 +95,14 @@ authentication:
 |---|---|
 | `GET /api/v1/users/{username}` | a public profile |
 | `GET /api/v1/users/{username}/commits` | that user's commits, newest first, 20 per page |
+| `GET /api/v1/users/{username}/commits?replies=1` | that user's replies, same paging — replies only, not merged with the list above |
 | `GET /api/v1/commits/{id}` | one commit |
 
 There is no global timeline endpoint and no search, so **Following** is built
-from that API: one request per watched user, merged and sorted. The site's own
-`/log/following` is not used because it answers `302` to the login page, and
-this plugin has no session and wants none.
+from that API: one request per watched user, merged and sorted, and a second
+one each when `includeReplies` is on. The site's own `/log/following` is not
+used because it answers `302` to the login page, and this plugin has no session
+and wants none.
 
 **Latest** and **Trending** have no API endpoint at all. They are read from the
 Inertia payload the site already embeds in those two pages — a
@@ -111,8 +114,9 @@ show none), and an avatar hosted on `dev-null.sh` itself rather than on GitHub's
 CDN is not loaded.
 
 The API allows 60 requests per minute per IP. A Following refresh costs one
-request per watched user and runs them one at a time; the other two cost a
-single page each. Five minutes and a handful of users stays well inside it.
+request per watched user — two when replies are included — and runs them one at
+a time; the other two cost a single page each. Five minutes and a handful of
+users stays well inside it.
 
 ## Settings
 
@@ -122,11 +126,11 @@ Stored in this widget's entry in `~/.config/omarchy/shell.json`:
 |---|---|---|
 | `view` | `following` | `following`, `latest` or `trending` |
 | `watch` | `nunomaduro,brendt,paulinevos,mnapoli` | comma-separated GitHub usernames |
-| `includeReplies` | `false` | fetch replies as well as top-level commits |
+| `includeReplies` | `false` | fetch replies as well as top-level commits (a second request per user) |
 | `refreshMinutes` | `5` | refresh interval, 1–60 |
 | `showAvatars` | `true` | load avatars from GitHub's CDN |
 | `notifyNewPosts` | `true` | desktop notification when a watched developer posts; the bell in the panel writes this |
-| `notifySound` | `true` | play a sound with that notification, through your active sound theme; Do Not Disturb mutes it with the notification |
+| `notifySound` | `true` | play a sound with that notification, through your active sound theme; Do Not Disturb or a snooze mutes it with the notification |
 
 ```bash
 omarchy bar set io.github.ivozzz.devnull view trending
@@ -145,9 +149,11 @@ The widget is alive whether or not the panel is open, and these are the things
 that happen without you asking:
 
 - Every `refreshMinutes`, it fetches the current feed. Nothing is stored: the
-  feed, and the list of commit ids already counted as seen, live in memory for
-  the shell session only. The timer pauses while the panel is open, so a
-  refresh cannot reorder the rows under the cursor, and catches up on close.
+  feed, and the list of commit ids already counted as seen for each feed, live
+  in memory for the shell session only. The timer pauses while the panel is
+  open, so a refresh cannot reorder the rows under the cursor, and catches up
+  on close. Switching feeds in the middle of a fetch throws that answer away
+  rather than painting the old feed under the new tab.
 - With `notifyNewPosts` on, a refresh that finds new commits from somebody you
   watch sends one desktop notification. It is skipped entirely while the panel
   is open, because then the commits are already on screen, and consecutive
@@ -155,8 +161,8 @@ that happen without you asking:
 - With `notifySound` on as well, that notification is heard: the notification
   service shows a toast and nothing else, so the plugin plays the freedesktop
   `message-new-instant` event through your active sound theme with a second
-  command. It is silenced with the toast by Do Not Disturb, and never plays
-  when `notifyNewPosts` is off.
+  command. It is silenced with the toast by Do Not Disturb or a snooze, and
+  never plays when `notifyNewPosts` is off.
 - A notification names itself `dev-null.sh` rather than borrowing Omarchy's own
   app name. That matters: the notification service lets its own action toasts
   past Do Not Disturb and treats them as throwaway, which is right for "theme
@@ -215,15 +221,18 @@ The same keys are printed along the bottom of the panel. From the lookup box,
   action can run is the browser, with a commit URL rebuilt the same way.
 - Avatars load only from `avatars.githubusercontent.com` and
   `user-images.githubusercontent.com`, and only when `showAvatars` is on.
-- Which commits you have already seen is kept in memory for the shell session.
-  Nothing is written to disk beyond the settings above.
+- Which commits you have already seen is kept in memory for the shell session,
+  one list per feed. Nothing is written to disk beyond the settings above.
 
 ## Tests
 
 ```bash
-node --test tests/model.test.js    # API and page parsing, validation, merge, freshness, notifications
+node --test tests/*.test.js        # API and page parsing, validation, merge, freshness, catalogs
 ./tests/qml-smoke.test.sh          # compiles and instantiates both entry points
 ```
+
+The node suite runs in CI on every push; the QML smoke test needs a running
+Quickshell, so it stays local.
 
 Saving a QML file under `~/.config/omarchy/plugins/` reloads plugin code on
 save. It has not always taken effect here, so if a change does not show up in

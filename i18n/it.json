@@ -39,5 +39,6 @@
   "age.hours": { "one": "%1 ora fa", "other": "%1 ore fa" },
   "age.days": { "one": "%1 giorno fa", "other": "%1 giorni fa" },
   "age.weeks": { "one": "%1 settimana fa", "other": "%1 settimane fa" },
-  "age.months": { "one": "%1 mese fa", "other": "%1 mesi fa" }
+  "age.months": { "one": "%1 mese fa", "other": "%1 mesi fa" },
+  "age.years": { "one": "%1 anno fa", "other": "%1 anni fa" }
 }

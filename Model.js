@@ -5,7 +5,12 @@
 //
 //   GET /api/v1/users/{username}           one public profile
 //   GET /api/v1/users/{username}/commits   a user's commits, newest first, 20
-//                                          per page (?replies=1 for replies)
+//                                          per page
+//   GET /api/v1/users/{username}/commits?replies=1
+//                                          that user's replies, same paging;
+//                                          the top-level list does not include
+//                                          them, so a feed that wants both
+//                                          asks twice
 //   GET /api/v1/commits/{id}               one commit
 //
 // Rate limit: 60 requests per minute per IP. There is no global timeline
@@ -33,6 +38,11 @@ var LOG_PATHS = { latest: "/log/latest", trending: "/log/trending" };
 
 var BASE = "https://dev-null.sh";
 var API = "https://dev-null.sh/api/v1";
+
+// The names the widget watches until somebody writes a list of their own. The
+// panel falls back to this one, and the tests hold manifest.json and the
+// README to it, so the copies cannot drift apart.
+var DEFAULT_WATCH = "nunomaduro,brendt,paulinevos,mnapoli";
 
 // dev-null.sh caps a commit body at 4000 characters.
 var BODY_LIMIT = 4000;
@@ -194,10 +204,14 @@ function commitUrl(name, id) {
 // so nothing a response or a setting contains can be reinterpreted by a
 // shell. The host is fixed here; only the validated path varies, and a URL
 // that is not on the API base yields no command at all.
+//
+// Two shapes are allowed: a user's commits (optionally replies) and a user's
+// profile. The profile one is what the lookup box fetches; leaving it out
+// returned no command at all, so the box silently did nothing.
 function fetchArgs(url) {
   var s = String(url === undefined || url === null ? "" : url);
   if (s.indexOf(API + "/users/") !== 0) return [];
-  if (!/^https:\/\/dev-null\.sh\/api\/v1\/users\/[A-Za-z0-9-]{1,39}\/commits(\?replies=1)?$/.test(s)) return [];
+  if (!/^https:\/\/dev-null\.sh\/api\/v1\/users\/[A-Za-z0-9-]{1,39}(\/commits(\?replies=1)?)?$/.test(s)) return [];
   return [
     "curl", "-fsS", "--compressed",
     "--connect-timeout", "4",
@@ -329,13 +343,23 @@ function inertiaPayload(raw) {
 // Latest and Trending, read from the page's own payload. The commits there
 // carry the same fields the public API returns, so they go through the same
 // validation and the same URL rebuild.
-function parseLogPage(raw, limit) {
+//
+// Returns the raw list, or null when the payload does not carry a feed at all.
+// The panel needs that difference: an empty but readable feed is not a failed
+// one, and saying "this feed could not be read" over a legitimate zero would
+// be a lie.
+function pageFeed(raw) {
   var page = inertiaPayload(raw);
-  if (!page || !isObject(page.props)) return [];
+  if (!page || !isObject(page.props)) return null;
 
   var commits = page.props.commits;
-  var list = isObject(commits) && Array.isArray(commits.data) ? commits.data : [];
-  return parseCommitList(list, limit);
+  if (isObject(commits) && Array.isArray(commits.data)) return commits.data;
+  return Array.isArray(commits) ? commits : null;
+}
+
+function parseLogPage(raw, limit) {
+  var list = pageFeed(raw);
+  return list ? parseCommitList(list, limit) : [];
 }
 
 // The error body a 404 carries, for the "no such user" state.
@@ -418,7 +442,8 @@ function ageUnit(iso, nowMs) {
   var days = Math.floor(hours / 24);
   if (days < 7) return { unit: "days", value: days };
   if (days < 30) return { unit: "weeks", value: Math.floor(days / 7) };
-  return { unit: "months", value: Math.floor(days / 30) };
+  if (days < 365) return { unit: "months", value: Math.floor(days / 30) };
+  return { unit: "years", value: Math.floor(days / 365) };
 }
 
 // Ids already counted, so the bar can report what arrived since the last
@@ -488,6 +513,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     BASE: BASE,
     API: API,
+    DEFAULT_WATCH: DEFAULT_WATCH,
     BODY_LIMIT: BODY_LIMIT,
     FEED_LIMIT: FEED_LIMIT,
     WATCH_LIMIT: WATCH_LIMIT,
@@ -519,6 +545,7 @@ if (typeof module !== "undefined") {
     parseCommitList: parseCommitList,
     parseCommits: parseCommits,
     inertiaPayload: inertiaPayload,
+    pageFeed: pageFeed,
     parseLogPage: parseLogPage,
     parseErrorMessage: parseErrorMessage,
     mergeCommits: mergeCommits,

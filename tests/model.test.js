@@ -6,6 +6,8 @@
 // what the panel will draw. Run with: node --test tests/
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const fs = require("node:fs")
+const path = require("node:path")
 const Model = require("../Model.js")
 
 const AUTHOR = {
@@ -140,6 +142,37 @@ test("fetchArgs refuses any URL off the API base", () => {
 
   const replies = Model.fetchArgs("https://dev-null.sh/api/v1/users/brendt/commits?replies=1")
   assert.equal(replies.at(-1), "https://dev-null.sh/api/v1/users/brendt/commits?replies=1")
+})
+
+// The lookup box fetches a profile, not a commit list. When this returned no
+// command at all the box silently did nothing, on every release, because the
+// only path the tests exercised was the empty one.
+test("fetchArgs builds the profile request the lookup box needs", () => {
+  const url = Model.profileApiUrl("nunomaduro")
+  assert.equal(url, "https://dev-null.sh/api/v1/users/nunomaduro")
+
+  const args = Model.fetchArgs(url)
+  assert.equal(args[0], "curl")
+  assert.equal(args.at(-1), "https://dev-null.sh/api/v1/users/nunomaduro")
+  assert.ok(args.includes("--max-time"))
+
+  // A user's path has no trailing slash, no query, and no deeper path: the two
+  // shapes the plugin builds are commits and a profile, nothing else.
+  for (const value of [
+    "https://dev-null.sh/api/v1/users/nunomaduro/",
+    "https://dev-null.sh/api/v1/users/nunomaduro?tab=repos",
+    "https://dev-null.sh/api/v1/users/nunomaduro/commits/1",
+    "https://dev-null.sh/api/v1/users/nunomaduro/commits?replies=0",
+    "https://dev-null.sh/api/v1/users//commits",
+    "https://dev-null.sh/api/v1/users/bad user",
+    ""
+  ]) {
+    assert.deepEqual(Model.fetchArgs(value), [], `should refuse ${JSON.stringify(value)}`)
+  }
+
+  // An invalid username never becomes a URL in the first place.
+  assert.equal(Model.profileApiUrl("bad user"), "")
+  assert.deepEqual(Model.fetchArgs(Model.profileApiUrl("bad user")), [])
 })
 
 // ---- text ----------------------------------------------------------------
@@ -290,6 +323,22 @@ test("watchString is the round trip a shell.json edit stores", () => {
   assert.equal(Model.watchString(["nunomaduro", "bad user"]), "nunomaduro")
 })
 
+// The same four names are written in the model, in the manifest's defaults,
+// and in the README's settings table. One of them drifting is a bug nobody
+// notices until a fresh install watches somebody the docs do not mention.
+test("the example watchlist lives in one place and the copies match", () => {
+  assert.equal(Model.DEFAULT_WATCH, "nunomaduro,brendt,paulinevos,mnapoli")
+  assert.equal(Model.watchList(Model.DEFAULT_WATCH).length, 4)
+
+  const dir = path.join(__dirname, "..")
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"))
+  assert.equal(manifest.barWidget.defaults.watch, Model.DEFAULT_WATCH)
+  assert.equal(manifest.barWidget.schema.find((field) => field.key === "watch").defaultValue, Model.DEFAULT_WATCH)
+
+  const readme = fs.readFileSync(path.join(dir, "README.md"), "utf8")
+  assert.ok(readme.includes(Model.DEFAULT_WATCH), "the README documents the same list")
+})
+
 // ---- freshness -----------------------------------------------------------
 
 test("the first refresh counts nothing as new", () => {
@@ -351,6 +400,7 @@ test("ageUnit picks the right unit", () => {
   assert.deepEqual(at("2026-10-15T12:00:00Z"), { unit: "days", value: 2 })
   assert.deepEqual(at("2026-10-01T12:00:00Z"), { unit: "weeks", value: 2 })
   assert.deepEqual(at("2026-06-01T12:00:00Z"), { unit: "months", value: 4 })
+  assert.deepEqual(at("2024-09-01T12:00:00Z"), { unit: "years", value: 2 })
   assert.equal(at("not a date"), null)
   assert.equal(at(undefined), null)
 })
@@ -449,6 +499,17 @@ test("parseLogPage returns nothing rather than throwing on a page it cannot read
   assert.deepEqual(Model.parseLogPage("<html><body>login</body></html>"), [])
   assert.deepEqual(Model.parseLogPage(logPage([])), [])
   assert.deepEqual(Model.parseLogPage(logPage([{ id: "nope" }])), [])
+})
+
+// A feed that is genuinely empty and a page that could not be read both parse
+// to no rows. The panel says "this feed could not be read" only for the second
+// one, so the model has to tell them apart.
+test("pageFeed separates an empty feed from an unreadable page", () => {
+  assert.deepEqual(Model.pageFeed(logPage([])), [])
+  assert.equal(Model.pageFeed(logPage([commit()])).length, 1)
+  assert.equal(Model.pageFeed("<html><body>login</body></html>"), null)
+  assert.equal(Model.pageFeed(""), null)
+  assert.equal(Model.pageFeed('<script type="application/json">{"props":{}}</script>'), null)
 })
 
 test("a log page cannot smuggle markup or a foreign URL into a row", () => {

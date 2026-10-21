@@ -11,8 +11,9 @@ import "Model.js" as Model
 //
 // "following" has no page on the site — /log/following redirects to the login
 // — so it is the plugin's own watchlist, merged from one API request per
-// watched user. Those run strictly one after another (60/minute per IP is the
-// whole budget). The last good feed stays on screen while a refresh runs.
+// watched user, plus a second one each when replies are switched on. Those run
+// strictly one after another (60/minute per IP is the whole budget). The last
+// good feed stays on screen while a refresh runs.
 Panel {
   id: root
   moduleName: "io.github.ivozzz.devnull"
@@ -31,7 +32,7 @@ Panel {
   // The manifest carries the same defaults for the settings form, but a bar
   // entry written by `omarchy plugin enable` has no settings block at all, so
   // the fallback lives here too or the widget starts with nothing to read.
-  readonly property string defaultWatch: "nunomaduro,brendt,paulinevos,mnapoli"
+  readonly property string defaultWatch: Model.DEFAULT_WATCH
   readonly property var watchList: Model.watchList(setting("watch", root.defaultWatch))
   // True when the entry never carried a watchlist of its own, so the four
   // names are this plugin's examples rather than a choice.
@@ -67,13 +68,24 @@ Panel {
     // the old feed too, so the status line waits for this one to land.
     root.resetCursor()
     root.lastSuccessMs = 0
+    // The count belonged to the feed being left; the bar must not show it over
+    // the new tab before that feed has answered.
+    root.freshCount = 0
     root.expandedId = ""
     root.copiedId = ""
+    // Whatever is in flight belongs to the feed being left. Bumping the epoch
+    // here, not only when the reload starts, closes the gap in which a late
+    // response could land on the new tab.
+    root.fetchEpoch += 1
+    root.abortFetches()
+    root.loading = true
     Qt.callLater(function() {
       root.scrollFeedToTop()
       root.refresh(true)
     })
   }
+  // A second request per watched user: the API answers ?replies=1 with
+  // replies only, so "include" means an extra fetch, not a wider page.
   readonly property bool includeReplies: root.boolSetting("includeReplies", false)
   readonly property int refreshMinutes: Math.max(1, Math.min(60, parseInt(setting("refreshMinutes", 5), 10) || 5))
   readonly property bool showAvatars: root.boolSetting("showAvatars", true)
@@ -86,22 +98,34 @@ Panel {
   // A sound with that notification, so a post that lands while the panel is
   // shut is heard as well as seen. The notification service has no sound of its
   // own, so this is a second command beside the send; it takes the same switch
-  // as the toast and is silenced with it by Do Not Disturb.
+  // as the toast and is silenced with it by Do Not Disturb or a snooze.
   readonly property bool notifySound: root.boolSetting("notifySound", true)
 
   // ---- Feed state -------------------------------------------------------
   property var entries: []
   property var bundles: ({})
   property var attempts: ({})
+  // One entry per request still to make: { user, replies }. Replies are a
+  // second request per watched user, because the API's ?replies=1 answers
+  // with replies only — it does not merge them into the top-level list.
   property var pending: []
-  property var failedUsers: []
+  // The requests that came back unreadable, in the same shape. The status line
+  // counts them and the retry asks for exactly these again.
+  property var failedRequests: []
   property string activeUser: ""
-  property string retryUser: ""
+  property bool activeReplies: false
+  property var retryRequest: null
   property bool loading: false
   property int freshCount: 0
-  // Ids already counted, kept in memory for the shell session only.
-  property var seenIds: []
-  property bool primed: false
+  // Ids already counted as seen, per feed, kept in memory for the shell
+  // session only. Per feed because a commit on Latest is not news on the
+  // watchlist, and counting it twice would turn the pill into decoration.
+  property var seenByView: ({})
+  // Bumped on every new feed load. Responses carry the epoch they were asked
+  // for and are dropped when it no longer matches, so switching feeds while a
+  // request is in flight cannot paint the old feed under the new tab.
+  property int fetchEpoch: 0
+  property int activeEpoch: 0
   // The API allows 60 requests a minute per IP and a refresh costs one request
   // per watched user, so reopening the panel must not be able to spend the
   // whole budget in a minute.
@@ -120,6 +144,10 @@ Panel {
   property bool lookupMissing: false
   property bool lookupInvalid: false
   property bool lookingUp: false
+  // A second lookup while the first is still out must not paint the first
+  // answer over it: the older reply is dropped, like a stale feed reply.
+  property int lookupEpoch: 0
+  property int lookupActiveEpoch: 0
 
   // A log page that came back with no readable feed: a login wall, a
   // redesigned payload, or a network blip that curl let through.
@@ -139,7 +167,8 @@ Panel {
     hours: "%1 hours ago",
     days: "%1 days ago",
     weeks: "%1 weeks ago",
-    months: "%1 months ago"
+    months: "%1 months ago",
+    years: "%1 years ago"
   })
 
   // Qt's arg() warns and does nothing when a template carries no %1, which is
@@ -188,7 +217,7 @@ Panel {
   // watched developers timing out while the other two answered looked like a
   // complete feed. The status line under the tabs reports it either way, and
   // offers the retry.
-  readonly property bool hasFailures: root.failedUsers.length > 0 || root.viewFailed
+  readonly property bool hasFailures: root.failedRequests.length > 0 || root.viewFailed
 
   readonly property string statusText: {
     if (root.viewFailed) return strings.t("panel.unavailable", "This feed could not be read.")
@@ -201,10 +230,10 @@ Panel {
         root.ageLabelMs(root.lastSuccessMs)
       ))
     }
-    if (root.failedUsers.length > 0) {
+    if (root.failedRequests.length > 0) {
       parts.push(root.fill(
-        strings.tn("panel.failed", root.failedUsers.length, "%1 requests failed"),
-        Commons.I18n.formatNumber(root.failedUsers.length)
+        strings.tn("panel.failed", root.failedRequests.length, "%1 requests failed"),
+        Commons.I18n.formatNumber(root.failedRequests.length)
       ))
     }
     return parts.join(" · ")
@@ -286,6 +315,17 @@ Panel {
     return next
   }
 
+  // Stops whatever is in flight and forgets which request it was. The epoch,
+  // not this, is what makes a late stdout callback harmless.
+  function abortFetches() {
+    if (feedProc.running) feedProc.running = false
+    if (pageProc.running) pageProc.running = false
+    retryTimer.stop()
+    root.activeUser = ""
+    root.activeReplies = false
+    root.retryRequest = null
+  }
+
   // `force` is for the explicit ones (the r key, middle click, a tab change);
   // opening the panel and the refresh timer take the quiet path.
   function refresh(force) {
@@ -293,7 +333,11 @@ Panel {
     if (!force && root.lastRefreshMs > 0 && now - root.lastRefreshMs < 60000) return
     root.lastRefreshMs = now
 
-    root.failedUsers = []
+    root.fetchEpoch += 1
+    root.activeEpoch = root.fetchEpoch
+    root.abortFetches()
+
+    root.failedRequests = []
     // A log page that failed to parse must not keep the status line on
     // "This feed could not be read" after switching back to the watchlist.
     root.viewFailed = false
@@ -310,7 +354,14 @@ Panel {
     }
     root.bundles = {}
     root.attempts = {}
-    root.pending = users.slice()
+    // One request for the top-level commits, and — when the setting is on —
+    // one more for the replies. They are separate lists on the API, so a feed
+    // that wants both asks twice.
+    root.pending = []
+    for (var i = 0; i < users.length; i++) {
+      root.pending.push({ user: users[i], replies: false })
+      if (root.includeReplies) root.pending.push({ user: users[i], replies: true })
+    }
     root.loading = true
     root.nextUser()
   }
@@ -394,10 +445,12 @@ Panel {
   }
 
   function onPageResponse(raw) {
+    if (root.activeEpoch !== root.fetchEpoch) return
     root.loading = false
-    var commits = Model.parseLogPage(raw)
-    root.viewFailed = commits.length === 0
-    root.applyFeed(commits)
+    // A page that carries a feed and no commits is an empty feed; a page
+    // without one is the failure this state exists for.
+    root.viewFailed = Model.pageFeed(raw) === null
+    root.applyFeed(Model.parseLogPage(raw))
   }
 
   function nextUser() {
@@ -408,46 +461,63 @@ Panel {
     root.startFetch(root.pending.shift())
   }
 
-  function startFetch(user) {
-    var args = Model.fetchArgs(Model.commitsApiUrl(user, root.includeReplies))
+  // One request. The shape is the same as a `pending` entry: { user, replies }.
+  function startFetch(request) {
+    if (root.activeEpoch !== root.fetchEpoch) return
+    var user = request && request.user ? String(request.user) : ""
+    var replies = request ? request.replies === true : false
+    var args = Model.fetchArgs(Model.commitsApiUrl(user, replies))
     if (args.length === 0) {
-      root.failedUsers = root.failedUsers.concat([user])
+      root.failedRequests = root.failedRequests.concat([{ user: user, replies: replies }])
       root.nextUser()
       return
     }
     root.activeUser = user
+    root.activeReplies = replies
     feedProc.command = args
     feedProc.running = true
   }
 
+  // The key one request's retry budget is kept under. A user's commits and
+  // their replies are two requests and get two budgets.
+  function requestKey(request) {
+    var user = request && request.user ? String(request.user) : ""
+    return user + (request && request.replies === true ? "?replies=1" : "")
+  }
+
   function onFeedResponse(raw) {
+    if (root.activeEpoch !== root.fetchEpoch) return
     var user = root.activeUser
+    var replies = root.activeReplies
     root.activeUser = ""
+    root.activeReplies = false
     if (user === "") return
 
+    var key = root.requestKey({ user: user, replies: replies })
     var commits = Model.parseCommits(raw)
     if (commits.length > 0) {
-      // Keep whatever this user contributed earlier: a partial page must not
-      // shrink the feed.
+      // Keep whatever this user contributed earlier: the other half of their
+      // feed, or a page that arrived before a retry must not shrink it.
       root.bundles = withKey(root.bundles, user, (root.bundles[user] || []).concat(commits))
-      root.attempts = withKey(root.attempts, user, 0)
+      root.attempts = withKey(root.attempts, key, 0)
       root.nextUser()
       return
     }
 
-    var tries = root.attempts[user] || 0
+    var tries = root.attempts[key] || 0
     if (tries < 1) {
-      root.attempts = withKey(root.attempts, user, tries + 1)
-      root.retryUser = user
+      root.attempts = withKey(root.attempts, key, tries + 1)
+      root.retryRequest = { user: user, replies: replies }
       retryTimer.restart()
       return
     }
 
-    root.failedUsers = root.failedUsers.concat([user])
+    root.failedRequests = root.failedRequests.concat([{ user: user, replies: replies }])
     root.nextUser()
   }
 
   function finish() {
+    if (root.activeEpoch !== root.fetchEpoch) return
     root.loading = false
 
     var groups = []
@@ -458,19 +528,21 @@ Panel {
     root.applyFeed(Model.mergeCommits(groups, Model.FEED_LIMIT))
   }
 
-  // The status line's retry. On the watchlist it asks only the users whose
-  // request failed, so it does not spend the successful ones again; anything
-  // else (a log page, a feed that never arrived) is refreshed outright.
+  // The status line's retry. On the watchlist it asks only the requests that
+  // failed, so it does not spend the successful ones again; anything else (a
+  // log page, a feed that never arrived) is refreshed outright.
   function retry() {
     if (root.loading) return
-    if (root.view === "following" && root.failedUsers.length > 0) {
-      var users = root.failedUsers.slice()
-      root.failedUsers = []
-      for (var i = 0; i < users.length; i++)
-        root.attempts = root.withKey(root.attempts, users[i], 0)
-      root.pending = users
+    if (root.view === "following" && root.failedRequests.length > 0) {
+      var requests = root.failedRequests.slice()
+      root.failedRequests = []
+      for (var i = 0; i < requests.length; i++)
+        root.attempts = root.withKey(root.attempts, root.requestKey(requests[i]), 0)
+      root.pending = requests
       root.loading = true
       root.lastRefreshMs = Date.now()
+      root.fetchEpoch += 1
+      root.activeEpoch = root.fetchEpoch
       root.nextUser()
       return
     }
@@ -479,15 +551,21 @@ Panel {
 
   // One place decides what a feed means for the rest of the panel: the rows,
   // the count in the bar, what counts as new since the last refresh, and
-  // whether that is worth a notification. The first refresh has nothing to
-  // compare against, so nothing in it reads as new and nothing in it notifies.
-  function applyFeed(commits) {
-    var wasPrimed = root.primed
-    var summary = Model.unseen(commits, wasPrimed ? root.seenIds : [])
+  // whether that is worth a notification. Each feed keeps its own list of what
+  // has been shown, so Latest cannot pass for news on the watchlist, and the
+  // first load of a feed has nothing to compare against: nothing in it reads
+  // as new and nothing in it notifies.
+  // `forView` names the feed the rows belong to, which is the current one
+  // unless a caller says otherwise. The seen-ids bookkeeping is keyed by it, so
+  // a commit that arrived on Latest is not counted again on the watchlist.
+  function applyFeed(commits, forView) {
+    var key = forView || root.view
+    var known = root.seenByView[key]
+    var wasPrimed = Array.isArray(known)
+    var summary = Model.unseen(commits, wasPrimed ? known : [])
     var fresh = wasPrimed ? summary.count : 0
 
-    root.seenIds = Model.markSeen(wasPrimed ? root.seenIds : [], commits)
-    root.primed = true
+    root.seenByView = root.withKey(root.seenByView, key, Model.markSeen(wasPrimed ? known : [], commits))
 
     root.entries = commits
     root.freshCount = fresh
@@ -567,16 +645,17 @@ Panel {
   // active, so changing the theme changes what is heard.
   function soundArgv() {
     if (!root.notifySound) return []
-    // The sound has to stop where the toast stops. DND is the notification
-    // service's own switch, read live off the same proxy the bar's DND
-    // indicator uses rather than guessed from a state file. If the service is
-    // not reachable the check is skipped, not the sound: the plugin cannot see
-    // DND either way, and a notification that was sent and never seen is a
-    // bigger surprise than one that was heard.
+    // The sound has to stop where the toast stops. The notification service's
+    // own `quiet` flag covers both switches: Do Not Disturb and a snooze. (The
+    // older check read `doNotDisturb` alone, so a snoozed service swallowed
+    // the toast and played the sound.) If the service is not reachable the
+    // check is skipped, not the sound: the plugin cannot see the setting
+    // either way, and a notification that was sent and never seen is a bigger
+    // surprise than one that was heard.
     var service = root.bar && root.bar.shell
       && typeof root.bar.shell.firstPartyServiceFor === "function"
       ? root.bar.shell.firstPartyServiceFor("omarchy.notifications") : null
-    if (service && service.doNotDisturb === true) return []
+    if (service && (service.quiet === true || service.doNotDisturb === true)) return []
     return ["canberra-gtk-play", "-i", "message-new-instant"]
   }
 
@@ -590,13 +669,11 @@ Panel {
     id: retryTimer
     interval: 2500
     onTriggered: {
-      var user = root.retryUser
-      root.retryUser = ""
-      if (user === "") {
-        root.nextUser()
-        return
-      }
-      root.startFetch(user)
+      var request = root.retryRequest
+      root.retryRequest = null
+      // Nothing to retry means the batch was aborted (a feed switch, a new
+      // refresh): restarting it here would run alongside the new one.
+      if (request) root.startFetch(request)
     }
   }
 
@@ -652,6 +729,7 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (root.lookupActiveEpoch !== root.lookupEpoch) return
         root.lookingUp = false
         root.lookupInvalid = false
         var profile = Model.parseUser(text)
@@ -692,12 +770,24 @@ Panel {
       root.lookup = null
       root.lookupMissing = false
       root.lookingUp = false
+      root.lookupEpoch += 1
       root.lookupInvalid = String(text === undefined || text === null ? "" : text).trim() !== ""
       return
     }
     var args = Model.fetchArgs(Model.profileApiUrl(name))
-    if (args.length === 0) return
+    // The model only refuses a URL it did not build, which cannot happen for
+    // a validated username. If it ever does, say so instead of going quiet.
+    if (args.length === 0) {
+      root.lookup = null
+      root.lookingUp = false
+      root.lookupMissing = false
+      root.lookupInvalid = true
+      return
+    }
 
+    if (lookupProc.running) lookupProc.running = false
+    root.lookupEpoch += 1
+    root.lookupActiveEpoch = root.lookupEpoch
     root.lookingUp = true
     root.lookup = null
     root.lookupMissing = false
@@ -742,17 +832,20 @@ Panel {
   // shell.json is this widget's settings store and omarchy-bar is its only
   // writer, so the edit goes through the bar command. Passed as argv, never a
   // shell string, so a username stays data.
+  //
+  // The new list comes back through `settings` on its own. The refetch waits
+  // for that round trip instead of for a guessed delay: the old 600ms timer
+  // could fire before the bar had written the file, and then fetch the list
+  // the user had just changed.
+  property bool watchWritePending: false
   function persistWatch(value) {
+    root.watchWritePending = true
     Util.execArgv(["omarchy-bar", "set", "io.github.ivozzz.devnull", "watch", value])
-    // The new watchlist has to come back through shell.json before a refresh
-    // can read it, so the fetch waits a beat instead of re-reading the old one.
-    refreshAfterSave.restart()
   }
-
-  Timer {
-    id: refreshAfterSave
-    interval: 600
-    onTriggered: root.refresh(true)
+  onWatchListChanged: {
+    if (!root.watchWritePending) return
+    root.watchWritePending = false
+    root.refresh(true)
   }
 
   // ---- Commit actions ---------------------------------------------------

@@ -231,10 +231,16 @@ ShellRoot {
     shell.expect("sound switched off, nothing to play", emptyPanel.soundArgv().length === 0)
     shell.expect("no service to ask, the sound still plays", panel.soundArgv().length > 0)
 
+    // Everything below applies feeds that look new while the panel is shut,
+    // which is exactly what raises a toast. The argv was checked above; the
+    // switch goes off here so the test cannot put one on the user's desktop.
+    panel.settings = ({ notifyNewPosts: false })
+    shell.expect("the harness mutes the toast", panel.notifyNewPosts === false)
+
     // The composition: a refresh that finds a commit the panel has not seen
     // raises the fresh count, and the same refresh a second time does not.
-    // maybeNotify is not called here — it would put a toast on the desktop
-    // while the tests run — so this covers the counting half of it.
+    // maybeNotify still runs, but the switch is off, so the tests cover the
+    // counting half without a toast on the desktop.
     var freshFeed = Model.parseCommits(JSON.stringify({ data: [{
       id: "01a14b77-db13-7104-ba00-88e5315a0267",
       short_hash: "aa0267",
@@ -255,6 +261,25 @@ ShellRoot {
     shell.expect("a quiet pill shows no count", panel.barText === " ", JSON.stringify(panel.barText))
     shell.expect("no click target without a url",
       panel.notifyArgv({count: 1, authors: ["brendt"], authorCount: 1, newest: {body: "x", url: ""}}).indexOf("--exec") === -1)
+
+    // The seen ids belong to a feed. A commit first read on Latest is still
+    // news on the watchlist, and the first load of a feed never counts.
+    var latestOnly = Model.parseCommits(JSON.stringify({ data: [{
+      id: "01a14c88-db13-7104-ba00-88e5315a0267",
+      short_hash: "b5315a",
+      body: "first seen on the latest feed",
+      created_at: "2026-10-17T12:30:00Z",
+      stars_count: 0,
+      replies_count: 0,
+      author: { username: "brendt", name: "Brent Roose" }
+    }] }))
+    panel.applyFeed(latestOnly, "latest")
+    shell.expect("the first load of a feed counts nothing", panel.freshCount === 0, String(panel.freshCount))
+    panel.applyFeed(latestOnly, "following")
+    shell.expect("a commit seen on latest is still new on the watchlist",
+      panel.freshCount === 1, String(panel.freshCount))
+    panel.applyFeed(page.concat(freshFeed), "following")
+    shell.expect("the watchlist feed is where it was", panel.freshCount === 0, String(panel.freshCount))
 
     // The panel builds its content lazily on first open, and the row delegates
     // only exist once it has: open it, then feed it a longer list and check
@@ -289,8 +314,8 @@ ShellRoot {
         // as plain text, like every other sink.
         shell.expect("status reports the update",
           panel.lastSuccessMs > 0 && panel.statusText.length > 0, panel.statusText)
-        var beforeFailures = panel.failedUsers
-        panel.failedUsers = ["ghost"]
+        var beforeFailures = panel.failedRequests
+        panel.failedRequests = [{ user: "ghost", replies: false }]
         shell.expect("partial failures are reported",
           panel.hasFailures && panel.statusText.indexOf("<") === -1, panel.statusText)
 
@@ -303,7 +328,7 @@ ShellRoot {
         shell.expect("the tooltip explains the failure",
           panel.tooltipText.indexOf("<") === -1 && panel.tooltipText.length > 0, panel.tooltipText)
         panel.entries = beforeEntries
-        panel.failedUsers = beforeFailures
+        panel.failedRequests = beforeFailures
 
         // While another feed is loading over the rows still on screen, the
         // status says so and the rows dim rather than passing for the new feed.
@@ -475,6 +500,24 @@ ShellRoot {
             "lookingUp " + panel.lookingUp)
           panel.lookupUser("")
           shell.expect("the root lookup takes its text as an argument", panel.lookingUp === false)
+
+          // The lookup box fetches a profile, and it once had no command to
+          // fetch with: Model.fetchArgs answered "nothing" for every profile
+          // URL, so the box — and watch/unwatch with it — did nothing at all,
+          // silently, on every release. These are the request it builds and
+          // the state the panel enters while it waits.
+          var profileArgs = Model.fetchArgs(Model.profileApiUrl("nunomaduro"))
+          shell.expect("a profile has a request to make", profileArgs.length > 0, String(profileArgs.length))
+          shell.expect("the profile request is the curl argv",
+            profileArgs[0] === "curl"
+              && profileArgs[profileArgs.length - 1] === "https://dev-null.sh/api/v1/users/nunomaduro")
+
+          panel.lookupUser("nunomaduro")
+          shell.expect("a valid lookup starts", panel.lookingUp === true, "lookingUp " + panel.lookingUp)
+          // Invalidate the request so its late answer cannot land in a later
+          // assertion; the process is left to finish on its own.
+          panel.lookupUser("bad user")
+          shell.expect("an invalid lookup stops the spinner", panel.lookingUp === false)
 
           // The cursor belongs to one visit: content stays loaded between
           // opens, so a stale index would highlight a row on a feed the user
