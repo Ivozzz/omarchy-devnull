@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ivozzz.devnull",
   "name": "/dev/null",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "author": "ivo",
   "license": "MIT",
   "description": "Read-only dev-null.sh commit feed for the Omarchy bar.",
@@ -12,7 +12,7 @@
   },
   "barWidget": {
     "displayName": "/dev/null",
-    "description": "Merged commit log from the dev-null.sh developers you watch.",
+    "description": "Merged commit log from the dev-null.sh developers you watch, or the site's own feed when you sign in.",
     "category": "Social",
     "aliases": ["devnull", "dev-null", "devnullsh", "social", "feed"],
     "allowMultiple": false,
@@ -33,7 +33,7 @@
         "label": "Feed",
         "options": ["Following", "Latest", "Trending"],
         "defaultValue": "Following",
-        "description": "Following is this plugin's watchlist, merged from the public API. Latest and Trending are read from the site's own log pages."
+        "description": "Following is this plugin's watchlist, merged from the public API. Latest and Trending are read from the site's own log pages. Signing in from the panel switches all three to the site's signed API, where Following is your real follow graph; the watchlist settings are then unused."
       },
       {
         "key": "watch",

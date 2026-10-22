@@ -1,0 +1,36 @@
+#!/bin/sh
+# The devnull:// redirect from the browser lands here, through the desktop
+# entry the panel writes and registers with xdg-mime.
+#
+# It does one thing: writes the URL it was handed where the panel polls for it.
+# Nothing is parsed or trusted here — the plugin checks the prefix, the state
+# it generated, and the shape of the one-time code before redeeming it.
+#
+# umask 077 because the URL carries that one-time code: the file it is written
+# to is readable by its owner only, and the same is true of the temporary file
+# beside it.
+set -eu
+umask 077
+
+if [ "$#" -lt 1 ]; then
+  exit 1
+fi
+
+state="${XDG_STATE_HOME:-}"
+if [ -z "$state" ] && [ -n "${HOME:-}" ]; then
+  state="$HOME/.local/state"
+fi
+if [ -z "$state" ]; then
+  exit 1
+fi
+
+dir="$state/omarchy/devnull"
+if [ ! -d "$dir" ]; then
+  exit 1
+fi
+
+# A temporary file renamed over the target keeps the write atomic: the panel
+# either reads nothing or the whole URL, never half of one.
+tmp="$dir/callback.$$"
+printf '%s\n' "$1" > "$tmp"
+mv -f "$tmp" "$dir/callback"

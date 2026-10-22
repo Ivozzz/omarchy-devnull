@@ -125,6 +125,32 @@ ShellRoot {
     shell.expect("nothing fresh at rest", panel.hasFresh === false)
     shell.expect("refresh minute clamped", panel.refreshMinutes >= 1 && panel.refreshMinutes <= 60, String(panel.refreshMinutes))
 
+    // ---- Signing in, signed out ---------------------------------------
+    // Signing in is optional and nothing here clicks through it: with no
+    // account file the panel is signed out and every request it makes is the
+    // public one. The account tooltip is the way in and says so.
+    shell.expect("signed out by default", panel.signedIn === false, String(panel.signedIn))
+    shell.expect("no account name without an account", panel.accountName === "", panel.accountName)
+    shell.expect("signed out offers a sign-in",
+      panel.accountTooltip().length > 0 && panel.accountTooltip().indexOf("<") === -1, panel.accountTooltip())
+    shell.expect("the sign-in has a key of its own",
+      panel.keyPath.indexOf(panel.accountDir + "/device.key") === 0, panel.keyPath)
+    shell.expect("the account is not kept in shell.json",
+      panel.accountPath.indexOf("/omarchy/devnull/") !== -1, panel.accountPath)
+    shell.expect("the sign-in is a function", typeof panel.startLogin === "function")
+    // The two senders the flow drives — one for a feed, one for the
+    // redemption — built by the panel, idle until they are asked for a
+    // request.
+    var senders = (panel.data || []).filter(function(kid) {
+      return kid && typeof kid.send === "function" && typeof kid.abort === "function"
+    })
+    shell.expect("both signed-request senders exist", senders.length === 2, String(senders.length))
+    shell.expect("they start idle", senders.every(function(sender) { return sender.step === "" }))
+    // The handler the browser hands devnull:// to, resolved from this file's
+    // own directory so it moves with the checkout.
+    shell.expect("the callback handler resolves beside the panel",
+      panel.callbackScript.length > 0 && /devnull-callback$/.test(panel.callbackScript), panel.callbackScript)
+
     // The brand mark: light text on a dark bar picks the "on dark" file, and
     // the mark keeps a size that clears the brand's 16px floor at the default
     // bar height.
@@ -376,6 +402,28 @@ ShellRoot {
           return String(value).trim() === "@mnapoli"
         }), builtTexts.join("|"))
 
+        // Signed in, Following is the site's own follow graph rather than this
+        // plugin's watchlist: the chips go away, the panel says whose follows
+        // it is showing, and the watch button is not offered on a profile.
+        panel.account = ({
+          username: "ivo", name: "ivo", fingerprint: "SHA256:" + "A".repeat(43),
+          device: "Omarchy bar", signedInAt: ""
+        })
+        shell.expect("an account signs the panel in", panel.signedIn === true)
+        shell.expect("the tooltip names the account", panel.accountTooltip().indexOf("@ivo") !== -1, panel.accountTooltip())
+        var signedTexts = shell.visibleTexts(built)
+        shell.expect("the watchlist goes away when signed in", !signedTexts.some(function(value) {
+          return /^(watching|segui)\s+4\/12$/i.test(String(value).trim())
+        }), signedTexts.join("|"))
+        shell.expect("signed in says whose following it is", signedTexts.some(function(value) {
+          return /following is the people|following sono le persone/i.test(String(value))
+        }), signedTexts.join("|"))
+        panel.account = null
+        shell.expect("signing out brings the watchlist back", panel.signedIn === false)
+        shell.expect("signed out again, the chips are shown", shell.visibleTexts(built).some(function(value) {
+          return /^(watching|segui)\s+4\/12$/i.test(String(value).trim())
+        }))
+
         // A pasted repo link is not a person. It says so instead of doing
         // nothing, and never spends a request.
         panel.lookupUser("github.com/nunomaduro/laravel")
@@ -555,6 +603,19 @@ ShellRoot {
     if (typeof item.placeholderText === "string") found.push(item.placeholderText)
     var kids = item.children || []
     for (var i = 0; i < kids.length; i++) texts(kids[i], found)
+    return found
+  }
+
+  // The same, but honouring `visible`: a signed-in panel keeps the watchlist
+  // chips in the tree with visible false, so only their absence from here
+  // proves they are not on screen.
+  function visibleTexts(item, out) {
+    var found = out || []
+    if (!item || item.visible === false) return found
+    if (typeof item.text === "string") found.push(item.text)
+    if (typeof item.tooltipText === "string") found.push(item.tooltipText)
+    var kids = item.children || []
+    for (var i = 0; i < kids.length; i++) visibleTexts(kids[i], found)
     return found
   }
 

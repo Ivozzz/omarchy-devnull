@@ -1,7 +1,7 @@
 // dev-null.sh model.
 //
-// The site publishes a public, read-only JSON API under /api/v1 with no
-// authentication:
+// The site publishes a public, read-only JSON API under /api/v1 that needs no
+// authentication at all:
 //
 //   GET /api/v1/users/{username}           one public profile
 //   GET /api/v1/users/{username}/commits   a user's commits, newest first, 20
@@ -17,6 +17,14 @@
 // endpoint and no search, so the plugin's feed is the merged commit log of a
 // watchlist of usernames.
 //
+// Signing in is optional, and changes what "Following" means. The site has one
+// way in — GitHub OAuth — and its callback is pinned to the site, so a widget
+// cannot run that flow. It can use the approval the mobile app uses instead
+// (see the Sign-in section below): an SSH key of the plugin's own is approved
+// once from a browser page, and every request afterwards is signed with it.
+// The signed-in API then answers the site's own logs, including the Following
+// one the public API does not have.
+//
 // Everything below treats a response as untrusted input. Fields are read one
 // by one with their expected type, every string is length-capped, markup and
 // invisible characters are removed before a value can reach a Text, a tooltip,
@@ -25,14 +33,17 @@
 
 // The three feeds the panel offers.
 //
-// "following" is the plugin's watchlist: the site's own /log/following answers
-// 302 to the login page, and this plugin has no session and wants none. The
-// watchlist is the same idea — the people you chose to follow — and it is the
-// only one of the three that works off the public JSON API.
+// Signed out, "following" is the plugin's watchlist: the site's own
+// /log/following answers 302 to the login page, and the plugin has no session.
+// The watchlist is the same idea — the people you chose to follow — and it is
+// built from the public JSON API, one request per name.
 //
-// "latest" and "trending" have no API endpoint. The site serves them as
-// Inertia pages whose payload carries the same commit shape the API returns,
-// so those two are read from there.
+// Signed in, all three come from the signed API, and "following" is the site's
+// own follow graph rather than the watchlist.
+//
+// The pages stay for the signed-out case: "latest" and "trending" have no
+// public API endpoint, but the site serves them as Inertia pages whose payload
+// carries the same commit shape the API returns.
 var VIEWS = ["following", "latest", "trending"];
 var LOG_PATHS = { latest: "/log/latest", trending: "/log/trending" };
 
@@ -250,6 +261,306 @@ function pageFetchArgs(url) {
     "-H", "Accept: text/html",
     s
   ];
+}
+
+// ---- Sign-in -------------------------------------------------------------
+//
+// dev-null.sh only signs people in with GitHub, and its OAuth callback is
+// pinned to the site, so the plugin cannot run that flow. What it can use is
+// the device approval the mobile app uses: the site approves an SSH key for a
+// user once, from a page in the browser, and every API request afterwards is
+// signed with it. Settings → Devices on the site lists the approval and can
+// revoke it, with no password stored anywhere.
+//
+// The signed message is "<timestamp>\n<nonce>\n<METHOD>\n<path and query>\n<body>",
+// with the timestamp and the nonce also in X-Devnull-Timestamp and
+// X-Devnull-Nonce, and the signature (ssh-keygen -Y sign, namespace
+// devnull-api) in X-SSH-Signature.
+//
+// Everything that goes into a signed message is built here and validated here.
+// The key never leaves the plugin's own state directory, the private half is
+// only ever read by ssh-keygen, and the signature is handed to the header as
+// base64 with neither armor nor line breaks.
+
+var AUTH_NAMESPACE = "devnull-api";
+// The one redirect the site accepts for the approval page, so it is a constant
+// here rather than anything a setting or a response could steer.
+var CALLBACK_URL = "devnull://authorize";
+var CALLBACK_SCHEME = "x-scheme-handler/devnull";
+// What Settings → Devices will list the approval as.
+var DEVICE_NAME = "Omarchy bar";
+
+// The signed requests this plugin makes. Anything else yields no command at
+// all, so a response or a setting cannot point a signed request elsewhere.
+var SIGNED_PATHS = [
+  "/api/v1/log/following",
+  "/api/v1/log/latest",
+  "/api/v1/log/trending",
+  "/api/v1/devices"
+];
+
+// One of the three feeds as a signed API path. Signed out there is nothing to
+// ask for here: Following has no public endpoint.
+function logApiPath(name) {
+  var v = view(name);
+  return v === "" ? "" : "/api/v1/log/" + v;
+}
+
+// The path and query a signed request may carry, or "" for anything else.
+function signedPath(pathAndQuery) {
+  var p = String(pathAndQuery === undefined || pathAndQuery === null ? "" : pathAndQuery);
+  return SIGNED_PATHS.indexOf(p) === -1 ? "" : p;
+}
+
+// The bytes ssh-keygen signs. Empty when any part is not the shape the server
+// checks, so a malformed request never reaches the key.
+function signedMessage(timestamp, nonce, method, pathAndQuery, body) {
+  var ts = String(timestamp === undefined || timestamp === null ? "" : timestamp);
+  var n = String(nonce === undefined || nonce === null ? "" : nonce);
+  var m = String(method === undefined || method === null ? "" : method);
+  var p = signedPath(pathAndQuery);
+  var b = String(body === undefined || body === null ? "" : body);
+
+  if (!/^\d{9,11}$/.test(ts)) return "";
+  if (!/^[0-9a-f]{32}$/.test(n)) return "";
+  if (m !== "GET" && m !== "POST") return "";
+  if (p === "") return "";
+  if (b.length > 4096) return "";
+
+  return [ts, n, m, p, b].join("\n");
+}
+
+// The signature as a header value: the base64 body of the armored signature
+// ssh-keygen writes, with nothing else. Any character outside base64 means the
+// output was not a signature, and no command is built.
+function signatureBody(raw) {
+  var s = String(raw === undefined || raw === null ? "" : raw)
+    .replace(/-----(BEGIN|END) SSH SIGNATURE-----/g, "")
+    .replace(/\s+/g, "");
+  return /^[A-Za-z0-9+/=]{40,4096}$/.test(s) ? s : "";
+}
+
+// The argv for one signed API call, with the body already signed. `curl -f` is
+// deliberately left out: a revoked device answers 401 with a JSON body, and the
+// panel needs that status to say "sign in again" instead of "could not read
+// this feed". `-w` appends it after the body, which splitStatus takes off.
+function signedFetchArgs(method, pathAndQuery, timestamp, nonce, signature, body) {
+  var m = String(method === undefined || method === null ? "" : method);
+  var p = signedPath(pathAndQuery);
+  var sig = signatureBody(signature);
+  var b = String(body === undefined || body === null ? "" : body);
+  if (signedMessage(timestamp, nonce, m, p, b) === "" || sig === "") return [];
+
+  var args = [
+    "curl", "-sS", "--compressed",
+    "--connect-timeout", "4",
+    "--max-time", "12",
+    "--max-filesize", String(RESPONSE_LIMIT),
+    "-H", "Accept: application/json",
+    "-H", "X-Devnull-Timestamp: " + String(timestamp),
+    "-H", "X-Devnull-Nonce: " + String(nonce),
+    "-H", "X-SSH-Signature: " + sig,
+    "-w", "\n%{http_code}"
+  ];
+
+  if (m === "POST") {
+    if (b === "") return [];
+    args.push("-X", "POST", "-H", "Content-Type: application/json", "--data-binary", b);
+  }
+
+  args.push(BASE + p);
+  return args;
+}
+
+// The page the browser opens to approve the plugin's key. Every parameter is
+// validated against what the site accepts, and the redirect is the constant
+// above, so the one-time code can only come back to the devnull:// handler.
+function authorizeUrl(params) {
+  var p = isObject(params) ? params : {};
+  var fingerprint = String(p.fingerprint === undefined || p.fingerprint === null ? "" : p.fingerprint);
+  var device = line(p.deviceName, 100);
+  var challenge = String(p.challenge === undefined || p.challenge === null ? "" : p.challenge);
+  var state = String(p.state === undefined || p.state === null ? "" : p.state);
+
+  if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) return "";
+  if (device === "") return "";
+  if (!/^[A-Za-z0-9_-]{43}$/.test(challenge)) return "";
+  if (!/^[0-9a-f]{32}$/.test(state)) return "";
+
+  return BASE + "/mobile/authorize"
+    + "?fingerprint=" + encodeURIComponent(fingerprint)
+    + "&device_name=" + encodeURIComponent(device)
+    + "&code_challenge=" + encodeURIComponent(challenge)
+    + "&code_challenge_method=S256"
+    + "&state=" + encodeURIComponent(state)
+    + "&redirect_uri=" + encodeURIComponent(CALLBACK_URL);
+}
+
+// The one-time code the approval page hands back, or "" when the URL is not
+// the redirect this plugin asked for, carries no code, or carries a state that
+// is not the one this attempt generated.
+function parseCallbackUrl(raw, expectedState) {
+  var s = String(raw === undefined || raw === null ? "" : raw).trim();
+  if (s === "" || s.length > 4096) return "";
+
+  // Some launchers (GIO's own `gio launch`, among others) re-serialise the URI
+  // and give the empty path a slash, so devnull://authorize? and
+  // devnull://authorize/? are both the same callback.
+  var query = "";
+  if (s.indexOf(CALLBACK_URL + "?") === 0) query = s.slice(CALLBACK_URL.length + 1);
+  else if (s.indexOf(CALLBACK_URL + "/?") === 0) query = s.slice(CALLBACK_URL.length + 2);
+  else return "";
+
+  var params = {};
+  var parts = query.split("&");
+  for (var i = 0; i < parts.length; i++) {
+    var eq = parts[i].indexOf("=");
+    if (eq <= 0) continue;
+    var value = parts[i].slice(eq + 1).replace(/\+/g, " ");
+    try {
+      params[parts[i].slice(0, eq)] = decodeURIComponent(value);
+    } catch (e) {
+      return "";
+    }
+  }
+
+  var state = String(expectedState === undefined || expectedState === null ? "" : expectedState);
+  if (state === "" || params.state !== state) return "";
+  return /^[0-9a-f]{64}$/.test(String(params.code || "")) ? String(params.code) : "";
+}
+
+// The body that redeems the code for a device. The verifier is the one the
+// challenge was made from; the server hashes it again and refuses a mismatch.
+function deviceBody(code, verifier) {
+  var c = String(code === undefined || code === null ? "" : code);
+  var v = String(verifier === undefined || verifier === null ? "" : verifier);
+  if (!/^[0-9a-f]{64}$/.test(c)) return "";
+  if (!/^[A-Za-z0-9._~-]{43,128}$/.test(v)) return "";
+  return JSON.stringify({ code: c, code_verifier: v });
+}
+
+// What the approval URL's PKCE challenge is: base64url of the SHA-256 of the
+// verifier, without padding. The digest is computed by sha256sum (this file has
+// no crypto) and arrives here as hex, which is turned into the 43 characters
+// the site's own regex wants.
+function base64UrlFromHex(value) {
+  var hex = String(value === undefined || value === null ? "" : value).replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+  if (hex.length !== 64) return "";
+
+  var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  var out = "";
+  var i = 0;
+
+  for (; i + 6 <= hex.length; i += 6) {
+    var n = parseInt(hex.slice(i, i + 6), 16);
+    out += alphabet[(n >> 18) & 63] + alphabet[(n >> 12) & 63] + alphabet[(n >> 6) & 63] + alphabet[n & 63];
+  }
+
+  var rest = hex.length - i;
+  if (rest === 4) {
+    var two = parseInt(hex.slice(i, i + 4), 16);
+    out += alphabet[(two >> 10) & 63] + alphabet[(two >> 4) & 63] + alphabet[(two << 2) & 63];
+  } else if (rest === 2) {
+    var one = parseInt(hex.slice(i, i + 2), 16);
+    out += alphabet[(one >> 2) & 63] + alphabet[(one << 4) & 63];
+  }
+
+  return /^[A-Za-z0-9_-]{43}$/.test(out) ? out : "";
+}
+
+// `od -An -N16 -tx1 /dev/urandom` prints hex in columns; this is the run of hex
+// without the whitespace. Used for both the nonce (16 bytes) and the PKCE
+// verifier (32 bytes), which are then checked for length by their callers.
+function hexFromOd(raw) {
+  return String(raw === undefined || raw === null ? "" : raw).replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+}
+
+// `sha256sum` prints "<hex>  -" for its stdin.
+function digestHex(raw) {
+  var match = /([0-9a-fA-F]{64})/.exec(String(raw === undefined || raw === null ? "" : raw));
+  return match ? match[1].toLowerCase() : "";
+}
+
+// `ssh-keygen -lf key.pub` prints "<bits> SHA256:<43 chars> <comment> (<type>)".
+function fingerprintFromSshKeygen(raw) {
+  var match = /(SHA256:[A-Za-z0-9+/]{43})/.exec(String(raw === undefined || raw === null ? "" : raw));
+  return match ? match[1] : "";
+}
+
+// The file the plugin keeps its account in. The path is never read from the
+// file: it is this one, under the plugin's own state directory.
+function parseAccount(raw) {
+  var data = parse(raw, 4096);
+  if (!data) return null;
+
+  var name = username(data.username);
+  var fingerprint = String(data.fingerprint === undefined || data.fingerprint === null ? "" : data.fingerprint);
+  if (name === "" || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) return null;
+
+  return {
+    username: name,
+    name: line(data.name, LIMITS.name),
+    fingerprint: fingerprint,
+    device: line(data.device, 100),
+    signedInAt: line(data.signed_in_at, 40)
+  };
+}
+
+function accountJson(user, fingerprint, signedInAt) {
+  var name = username(user && user.username);
+  var fp = String(fingerprint === undefined || fingerprint === null ? "" : fingerprint);
+  if (name === "" || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(fp)) return "";
+
+  return JSON.stringify({
+    username: name,
+    name: line(user && user.name, LIMITS.name),
+    fingerprint: fp,
+    device: DEVICE_NAME,
+    signed_in_at: line(signedInAt, 40)
+  }) + "\n";
+}
+
+// Where the plugin keeps the key, the approval and the message it signs. Under
+// $XDG_STATE_HOME, never in shell.json: a private key does not belong in the
+// file the settings form writes.
+function stateDir(home, xdgStateHome) {
+  var h = String(home === undefined || home === null ? "" : home).replace(/\/+$/, "");
+  var x = String(xdgStateHome === undefined || xdgStateHome === null ? "" : xdgStateHome).replace(/\/+$/, "");
+  if (h === "" && x === "") return "";
+  return (x !== "" ? x : h + "/.local/state") + "/omarchy/devnull";
+}
+
+// The desktop entry that makes the browser hand the devnull:// redirect to the
+// plugin's own script. Hidden from menus, and carrying nothing but that.
+function desktopEntry(execPath) {
+  var path = String(execPath === undefined || execPath === null ? "" : execPath);
+  if (path === "" || /[\n\r"\\]/.test(path)) return "";
+
+  return [
+    "[Desktop Entry]",
+    "Type=Application",
+    "Name=/dev/null sign-in",
+    "NoDisplay=true",
+    "Terminal=false",
+    "MimeType=" + CALLBACK_SCHEME + ";",
+    "Exec=\"" + path + "\" %u",
+    ""
+  ].join("\n");
+}
+
+// The body of a signed response, and the status curl appended to it with -w.
+function splitStatus(raw) {
+  var text = String(raw === undefined || raw === null ? "" : raw);
+  var match = /\n(\d{3})$/.exec(text);
+  if (!match) return { status: 0, body: text };
+  return { status: parseInt(match[1], 10), body: text.slice(0, match.index) };
+}
+
+// The commits array of a response, or null when it carries no feed at all. The
+// panel needs that difference: an empty feed is not a failed one.
+function feedList(raw) {
+  var data = parse(raw);
+  return data && Array.isArray(data.data) ? data.data : null;
 }
 
 function parseUser(raw) {
@@ -540,6 +851,28 @@ if (typeof module !== "undefined") {
     view: view,
     logUrl: logUrl,
     pageFetchArgs: pageFetchArgs,
+    AUTH_NAMESPACE: AUTH_NAMESPACE,
+    DEVICE_NAME: DEVICE_NAME,
+    CALLBACK_URL: CALLBACK_URL,
+    CALLBACK_SCHEME: CALLBACK_SCHEME,
+    logApiPath: logApiPath,
+    signedPath: signedPath,
+    signedMessage: signedMessage,
+    signatureBody: signatureBody,
+    signedFetchArgs: signedFetchArgs,
+    authorizeUrl: authorizeUrl,
+    parseCallbackUrl: parseCallbackUrl,
+    deviceBody: deviceBody,
+    base64UrlFromHex: base64UrlFromHex,
+    hexFromOd: hexFromOd,
+    digestHex: digestHex,
+    fingerprintFromSshKeygen: fingerprintFromSshKeygen,
+    parseAccount: parseAccount,
+    accountJson: accountJson,
+    stateDir: stateDir,
+    desktopEntry: desktopEntry,
+    splitStatus: splitStatus,
+    feedList: feedList,
     parseUser: parseUser,
     parseCommit: parseCommit,
     parseCommitList: parseCommitList,

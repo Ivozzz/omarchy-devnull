@@ -6,14 +6,17 @@ import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
-// The /dev/null panel: three read-only feeds (the people you watch, Latest,
-// Trending) plus a lookup box for any GitHub username on dev-null.sh.
+// The /dev/null panel: three feeds (the people you watch or the site's own
+// follows, Latest, Trending) plus a lookup box for any GitHub username on
+// dev-null.sh.
 //
-// "following" has no page on the site — /log/following redirects to the login
-// — so it is the plugin's own watchlist, merged from one API request per
-// watched user, plus a second one each when replies are switched on. Those run
-// strictly one after another (60/minute per IP is the whole budget). The last
-// good feed stays on screen while a refresh runs.
+// Signed out, "following" is the plugin's own watchlist, merged from one API
+// request per watched user, plus a second one each when replies are switched
+// on. Those run strictly one after another (60/minute per IP is the whole
+// budget). Signed in, all three feeds come from the site's own signed API —
+//  one request each — and Following is the real follow graph.
+//
+// The last good feed stays on screen while a refresh runs.
 Panel {
   id: root
   moduleName: "io.github.ivozzz.devnull"
@@ -100,6 +103,47 @@ Panel {
   // own, so this is a second command beside the send; it takes the same switch
   // as the toast and is silenced with it by Do Not Disturb or a snooze.
   readonly property bool notifySound: root.boolSetting("notifySound", true)
+
+  // ---- Account (optional) ----------------------------------------------
+  // Signing in is a key the site approved for this widget, not a password and
+  // not a session: it lives in the plugin's own state directory, under
+  // $XDG_STATE_HOME, and never in shell.json. Signed out, everything still
+  // works off the public API and the log pages.
+  readonly property string home: String(Quickshell.env("HOME") || "")
+  readonly property string xdgStateHome: String(Quickshell.env("XDG_STATE_HOME") || "")
+  readonly property string accountDir: Model.stateDir(root.home, root.xdgStateHome)
+  readonly property string keyPath: root.accountDir === "" ? "" : root.accountDir + "/device.key"
+  readonly property string accountPath: root.accountDir === "" ? "" : root.accountDir + "/account.json"
+  readonly property string callbackPath: root.accountDir === "" ? "" : root.accountDir + "/callback"
+  readonly property string verifierPath: root.accountDir === "" ? "" : root.accountDir + "/verifier"
+  readonly property string desktopPath: root.home === ""
+    ? "" : root.home + "/.local/share/applications/devnull-callback.desktop"
+  // The script the devnull:// redirect lands in. It sits beside this file, so
+  // it moves with the plugin checkout.
+  readonly property string callbackScript: {
+    var url = String(Qt.resolvedUrl("bin/devnull-callback"))
+    return url.indexOf("file://") === 0 ? decodeURIComponent(url.slice(7)) : ""
+  }
+
+  property var account: null
+  readonly property bool signedIn: root.account !== null
+  // The site's reply names the account, and that is what the panel shows; it is
+  // already validated by the model (a username or nothing).
+  readonly property string accountName: root.account ? String(root.account.username) : ""
+  // Set when the site answers 401: the key was revoked under Settings →
+  // Devices (or the account is gone), and the panel says so instead of
+  // reporting a feed it could not read.
+  property bool accountExpired: false
+  // "" when nothing is happening, otherwise the step of the sign-in the panel
+  // is on. "error" keeps the last error on screen until the next attempt.
+  property string loginStep: ""
+  property string loginError: ""
+  property string loginState: ""
+  property string loginVerifier: ""
+  property string loginChallenge: ""
+  property string loginUrl: ""
+  property string loginFingerprint: ""
+  readonly property bool signingIn: root.loginStep !== "" && root.loginStep !== "error"
 
   // ---- Feed state -------------------------------------------------------
   property var entries: []
@@ -220,6 +264,7 @@ Panel {
   readonly property bool hasFailures: root.failedRequests.length > 0 || root.viewFailed
 
   readonly property string statusText: {
+    if (root.accountExpired) return strings.t("account.expired", "The sign-in was revoked. Sign in again.")
     if (root.viewFailed) return strings.t("panel.unavailable", "This feed could not be read.")
     if (root.switchingFeed) return strings.t("panel.fetching", "Fetching…")
 
@@ -320,6 +365,7 @@ Panel {
   function abortFetches() {
     if (feedProc.running) feedProc.running = false
     if (pageProc.running) pageProc.running = false
+    feedSign.abort()
     retryTimer.stop()
     root.activeUser = ""
     root.activeReplies = false
@@ -341,6 +387,12 @@ Panel {
     // A log page that failed to parse must not keep the status line on
     // "This feed could not be read" after switching back to the watchlist.
     root.viewFailed = false
+    // Signed in, every feed is one signed API call: no watchlist merge, and no
+    // page parsing.
+    if (root.signedIn) {
+      root.startSignedFetch()
+      return
+    }
     if (root.view !== "following") {
       root.startPageFetch()
       return
@@ -451,6 +503,58 @@ Panel {
     // without one is the failure this state exists for.
     root.viewFailed = Model.pageFeed(raw) === null
     root.applyFeed(Model.parseLogPage(raw))
+  }
+
+  // One signed request, for whichever feed is current. `fetchEpoch` guards it
+  // like the pages and the watchlist: a late answer for a feed the user has
+  // left is dropped instead of painted under the new tab.
+  function startSignedFetch() {
+    var path = Model.logApiPath(root.view)
+    if (path === "" || root.keyPath === "" || root.accountDir === "") {
+      root.loading = false
+      root.viewFailed = true
+      return
+    }
+    root.loading = true
+    feedSign.send("GET", path, "")
+  }
+
+  function onSignedFeedResponse(raw, status) {
+    if (root.activeEpoch !== root.fetchEpoch) return
+    root.loading = false
+
+    // 401 is the key the site no longer honours, 403 a banned account: both
+    // mean the approval is gone, which is a different thing from a feed that
+    // could not be read, and the status line says so.
+    if (status === 401 || status === 403) {
+      root.accountExpired = true
+      root.failedRequests = []
+      root.viewFailed = false
+      root.entries = []
+      root.freshCount = 0
+      return
+    }
+
+    var list = Model.feedList(raw)
+    root.viewFailed = status !== 200 || list === null
+    if (list === null) {
+      root.applyFeed([])
+      return
+    }
+    root.accountExpired = false
+    root.applyFeed(Model.parseCommitList(list, Model.FEED_LIMIT))
+  }
+
+  // A signed request that could not even be built: ssh-keygen refused, the key
+  // is gone, the disk is full. The key is what is missing in practice, so the
+  // panel asks for a new sign-in rather than blaming the network.
+  function onSignedFeedFailed(reason) {
+    if (root.activeEpoch !== root.fetchEpoch) return
+    root.loading = false
+    root.viewFailed = true
+    root.entries = []
+    root.freshCount = 0
+    root.accountExpired = true
   }
 
   function nextUser() {
@@ -745,6 +849,214 @@ Panel {
     }
   }
 
+  // ---- Sign-in plumbing -------------------------------------------------
+  // One message, one signature, one request each. The two senders write to
+  // different files so a feed refresh and a sign-in cannot clobber each
+  // other's message.
+  SignedRequest {
+    id: feedSign
+    keyPath: root.keyPath
+    directory: root.accountDir
+    slot: "sign-feed"
+    onFinished: function(body, status) { root.onSignedFeedResponse(body, status) }
+    onFailed: function(reason) { root.onSignedFeedFailed(reason) }
+  }
+
+  SignedRequest {
+    id: loginSign
+    keyPath: root.keyPath
+    directory: root.accountDir
+    slot: "sign-login"
+    onFinished: function(body, status) { root.onDeviceResponse(body, status) }
+    onFailed: function(reason) {
+      if (root.loginStep !== "redeem") return
+      root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+    }
+  }
+
+  // The account, read synchronously so the first refresh already knows whether
+  // it should sign its request.
+  FileView {
+    id: accountFile
+    path: root.accountPath
+    blockLoading: true
+    blockWrites: true
+    atomicWrites: true
+    printErrors: false
+  }
+
+  // These two are written and then read by the next command in the chain, so
+  // the write has to be on disk when setText returns, not queued.
+  FileView {
+    id: schemeFile
+    path: root.desktopPath
+    blockWrites: true
+    atomicWrites: true
+    printErrors: false
+  }
+
+  FileView {
+    id: verifierFile
+    path: root.verifierPath
+    blockWrites: true
+    atomicWrites: true
+    printErrors: false
+  }
+
+  Component.onCompleted: root.loadAccount()
+
+  function loginBroke() {
+    root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+  }
+
+  Process {
+    id: dirProc
+    onExited: function(code) {
+      if (root.loginStep !== "start") return
+      if (code !== 0) return root.loginBroke()
+      root.loginPrepare()
+    }
+  }
+
+  Process {
+    id: appDirProc
+    onExited: function(code) {
+      if (root.loginStep !== "start") return
+      if (code !== 0) return root.loginBroke()
+      root.loginKey()
+    }
+  }
+
+  // Every removal runs here. Only the key step waits for one — the key has to
+  // be made after the old one is gone — so that is the only continuation.
+  Process {
+    id: removeProc
+    onExited: function(code) {
+      if (root.removeQueue.length > 0) {
+        var queued = root.removeQueue
+        root.removeQueue = []
+        removeProc.command = ["rm", "-f"].concat(queued)
+        removeProc.running = true
+        return
+      }
+      if (root.loginStep === "key") root.loginKeyReady()
+    }
+  }
+
+  Process {
+    id: keygenProc
+    onExited: function(code) {
+      if (root.loginStep !== "key") return
+      if (code !== 0) return root.loginBroke()
+      root.loginReadFingerprint()
+    }
+  }
+
+  Process {
+    id: fingerprintProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (root.loginStep !== "key") return
+        var fingerprint = Model.fingerprintFromSshKeygen(text)
+        if (fingerprint === "") return root.loginBroke()
+        root.loginFingerprint = fingerprint
+        root.loginEntropy()
+      }
+    }
+  }
+
+  Process {
+    id: entropyProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (root.loginStep !== "key") return
+        root.loginEntropyReady(text)
+      }
+    }
+  }
+
+  Process {
+    id: digestProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (root.loginStep !== "key") return
+        root.loginChallengeReady(text)
+      }
+    }
+  }
+
+  Process {
+    id: mimeProc
+    onExited: function(code) {
+      if (root.loginStep !== "key") return
+      // Without the handler the browser has nowhere to send the code, so this
+      // is a failure rather than something to retry quietly.
+      if (code !== 0) return root.loginBroke()
+      desktopDbProc.command = ["update-desktop-database", root.home + "/.local/share/applications"]
+      desktopDbProc.running = true
+    }
+  }
+
+  // xdg-mime writes the preference, but GIO and the portal a browser asks to
+  // open devnull:// only list handlers the desktop database knows about. Skip
+  // this and the browser answers "no application available" for a scheme
+  // xdg-mime already points at.
+  Process {
+    id: desktopDbProc
+    onExited: function(code) {
+      if (root.loginStep !== "key") return
+      if (code !== 0) return root.loginBroke()
+      root.loginOpen()
+    }
+  }
+
+  // A step that never got off the ground — no ssh-keygen, no xdg-mime, a
+  // process that failed to start — would otherwise leave the clock spinning
+  // for good. Every local step here takes well under a second, so a step with
+  // nothing running ten seconds later is stuck rather than slow. The browser
+  // wait is deliberately not covered: that one is the user's to take, and the
+  // button cancels it.
+  Timer {
+    id: loginWatchdog
+    interval: 10000
+    repeat: true
+    running: root.loginStep === "start" || root.loginStep === "key"
+    onTriggered: {
+      if (dirProc.running || appDirProc.running || removeProc.running || keygenProc.running
+          || fingerprintProc.running || entropyProc.running || digestProc.running
+          || mimeProc.running || desktopDbProc.running) return
+      root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+    }
+  }
+
+  // The redirect the handler wrote. Polled rather than watched: the file only
+  // exists between the approval and the redemption, and is deleted after.
+  Timer {
+    id: callbackPoll
+    interval: 700
+    repeat: true
+    onTriggered: {
+      if (root.loginStep !== "waiting") {
+        callbackPoll.stop()
+        return
+      }
+      if (callbackCat.running) return
+      callbackCat.command = ["cat", root.callbackPath]
+      callbackCat.running = true
+    }
+  }
+
+  Process {
+    id: callbackCat
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onCallback(text)
+    }
+  }
+
   // ---- Notifications toggle ---------------------------------------------
   // A setting the user can see and change from here, rather than one that
   // only exists as a command in the README. Written through omarchy-bar like
@@ -846,6 +1158,286 @@ Panel {
     if (!root.watchWritePending) return
     root.watchWritePending = false
     root.refresh(true)
+  }
+
+  // ---- Signing in -------------------------------------------------------
+  // The steps, in order, and what answers each one:
+  //
+  //   start      install -d       the private state directory, then the
+  //                                applications directory for the handler
+  //   key        ssh-keygen       a key of the plugin's own, no passphrase
+  //              ssh-keygen -lf   its fingerprint, which the approval names
+  //              od               the PKCE verifier and the state
+  //              sha256sum        the challenge hash of the verifier
+  //              ssh-keygen       the devnull:// handler, registered with
+  //                                xdg-mime before the page opens
+  //   waiting    the browser      the approval page, polled for the redirect
+  //   redeem     SignedRequest    POST /api/v1/devices with the one-time code
+  //
+  // A failure anywhere keeps the message on screen. Nothing is retried on its
+  // own: a key that was never approved is thrown away, and the next attempt
+  // starts from a fresh one.
+
+  // The account file is the whole of the signed-in state: readable and carrying
+  // a username means signed in, anything else means signed out. It is read once
+  // at startup, and set by the sign-in itself — never watched, because
+  // sign-out deletes it and a watched file would only report what the panel
+  // already knows.
+  function loadAccount() {
+    var text = accountFile.text()
+    root.account = text === "" ? null : Model.parseAccount(text)
+    if (root.account === null) root.accountExpired = false
+  }
+
+  function startLogin() {
+    if (root.signingIn) return
+    if (root.accountDir === "" || root.keyPath === "" || root.callbackScript === "") {
+      root.loginFailed(strings.t("account.noHome", "No home directory to keep the key in."))
+      return
+    }
+
+    // Signing in again replaces whatever account was there, and the panel
+    // falls back to the watchlist while the browser is open. A request from a
+    // previous attempt must not land in this one.
+    loginSign.abort()
+    feedSign.abort()
+    root.account = null
+    root.accountExpired = false
+    root.loginError = ""
+    root.loginStep = "start"
+    root.loginFingerprint = ""
+    root.loginState = ""
+    root.loginVerifier = ""
+    root.loginChallenge = ""
+    root.loginUrl = ""
+
+    dirProc.command = ["install", "-d", "-m", "700", root.accountDir]
+    dirProc.running = true
+  }
+
+  function loginPrepare() {
+    appDirProc.command = ["install", "-d", "-m", "755", root.home + "/.local/share/applications"]
+    appDirProc.running = true
+  }
+
+  // Anything an attempt may have left behind, including the account being
+  // replaced. The private key goes too: the next attempt makes its own.
+  function loginCleanup() {
+    root.removeFiles(root.accountPath, root.keyPath, root.keyPath + ".pub",
+                     root.callbackPath, root.verifierPath,
+                     root.accountDir + "/sign-feed", root.accountDir + "/sign-feed.sig",
+                     root.accountDir + "/sign-login", root.accountDir + "/sign-login.sig")
+  }
+
+  // Paths waiting for the removal process that is already running. Two
+  // cleanups can overlap — a failure during a sign-out, say — and a Process
+  // cannot be given a new command while it runs.
+  property var removeQueue: []
+
+  function removeFiles() {
+    var paths = []
+    for (var i = 0; i < arguments.length; i++) {
+      var path = String(arguments[i] === undefined || arguments[i] === null ? "" : arguments[i])
+      if (path !== "") paths.push(path)
+    }
+    if (paths.length === 0) return
+    if (removeProc.running) {
+      root.removeQueue = root.removeQueue.concat(paths)
+      return
+    }
+    // argv, never a shell string: these paths are the plugin's own, and none of
+    // them came off the network.
+    removeProc.command = ["rm", "-f"].concat(paths)
+    removeProc.running = true
+  }
+
+  // The cleanup runs first and the key is made when it has finished: the
+  // removal is a process of its own, and starting ssh-keygen beside it would
+  // let the two race over the same path. removeProc calls loginKeyReady().
+  function loginKey() {
+    root.loginStep = "key"
+    root.loginCleanup()
+  }
+
+  function loginKeyReady() {
+    if (root.loginStep !== "key") return
+    keygenProc.command = [
+      "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", Model.DEVICE_NAME, "-f", root.keyPath
+    ]
+    keygenProc.running = true
+  }
+
+  function loginReadFingerprint() {
+    fingerprintProc.command = ["ssh-keygen", "-lf", root.keyPath + ".pub"]
+    fingerprintProc.running = true
+  }
+
+  function loginEntropy() {
+    // 48 bytes: 32 for the PKCE verifier, 16 for the state. One read is enough
+    // for both, and neither leaves the panel before the approval.
+    entropyProc.command = ["od", "-An", "-N48", "-tx1", "/dev/urandom"]
+    entropyProc.running = true
+  }
+
+  function loginEntropyReady(hex) {
+    var bytes = Model.hexFromOd(hex)
+    root.loginVerifier = bytes.slice(0, 64)
+    root.loginState = bytes.slice(64, 96)
+    if (!/^[0-9a-f]{64}$/.test(root.loginVerifier) || !/^[0-9a-f]{32}$/.test(root.loginState)) {
+      root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+      return
+    }
+
+    // sha256sum hashes a file rather than an argument, and the verifier has to
+    // reach the site only as a hash: it is written under the 0700 directory,
+    // hashed, and removed with the rest of the attempt.
+    verifierFile.setText(root.loginVerifier)
+    digestProc.command = ["sha256sum", root.verifierPath]
+    digestProc.running = true
+  }
+
+  function loginChallengeReady(digest) {
+    root.loginChallenge = Model.base64UrlFromHex(Model.digestHex(digest))
+    if (root.loginChallenge === "") {
+      root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+      return
+    }
+    root.loginUrl = Model.authorizeUrl({
+      fingerprint: root.loginFingerprint,
+      deviceName: Model.DEVICE_NAME,
+      challenge: root.loginChallenge,
+      state: root.loginState
+    })
+    if (root.loginUrl === "") {
+      root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+      return
+    }
+
+    // The browser hands devnull:// back to whatever xdg-mime points that scheme
+    // at, so the handler is written and registered before the page opens.
+    schemeFile.setText(Model.desktopEntry(root.callbackScript))
+    mimeProc.command = ["xdg-mime", "default", "devnull-callback.desktop", Model.CALLBACK_SCHEME]
+    mimeProc.running = true
+  }
+
+  function loginOpen() {
+    if (root.loginUrl === "") {
+      root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+      return
+    }
+    root.loginStep = "waiting"
+    Util.execArgv(["omarchy-launch-browser", root.loginUrl])
+    callbackPoll.restart()
+  }
+
+  // The URL the browser opened, read from the file the handler writes. Nothing
+  // in it is trusted: the prefix, the state, and the shape of the code are
+  // checked before the code is redeemed.
+  function onCallback(raw) {
+    if (root.loginStep !== "waiting") return
+    var text = String(raw === undefined || raw === null ? "" : raw).trim()
+    if (text === "") return
+
+    callbackPoll.stop()
+    var code = Model.parseCallbackUrl(text, root.loginState)
+    if (code === "") {
+      root.loginFailed(strings.t("account.cancelled", "The approval did not come back. Try again."))
+      return
+    }
+
+    var body = Model.deviceBody(code, root.loginVerifier)
+    if (body === "") {
+      root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+      return
+    }
+    root.loginStep = "redeem"
+    loginSign.send("POST", "/api/v1/devices", body)
+  }
+
+  function onDeviceResponse(raw, status) {
+    if (root.loginStep !== "redeem") return
+    if (status !== 200 && status !== 201) {
+      var message = Model.parseErrorMessage(raw)
+      root.loginFailed(message !== "" ? message : strings.t("account.failed", "The sign-in did not complete."))
+      return
+    }
+
+    var user = Model.parseUser(raw)
+    var json = user ? Model.accountJson(user, root.loginFingerprint, new Date().toISOString()) : ""
+    var account = json === "" ? null : Model.parseAccount(json)
+    if (!user || !account) {
+      root.loginFailed(strings.t("account.failed", "The sign-in did not complete."))
+      return
+    }
+
+    accountFile.setText(json)
+    root.account = account
+    root.loginStep = ""
+    root.loginError = ""
+    root.loginVerifier = ""
+    // The watchlist's seen ids do not belong to the site's own follows: a
+    // commit first seen on one would not notify on the other.
+    root.seenByView = root.withKey(root.seenByView, "following", [])
+    // The one-time code and the verifier that redeemed it are spent, and there
+    // is no reason to leave them on disk for the next request to trip over.
+    root.removeFiles(root.callbackPath, root.verifierPath,
+                     root.accountDir + "/sign-login", root.accountDir + "/sign-login.sig")
+    root.refresh(true)
+  }
+
+  function loginFailed(message) {
+    callbackPoll.stop()
+    if (callbackCat.running) callbackCat.running = false
+    loginSign.abort()
+    root.loginStep = "error"
+    root.loginError = String(message === undefined || message === null ? "" : message)
+    root.loginCleanup()
+  }
+
+  function cancelLogin() {
+    if (!root.signingIn) {
+      root.loginError = ""
+      root.loginStep = ""
+      return
+    }
+    root.loginStep = ""
+    root.loginError = ""
+    callbackPoll.stop()
+    if (callbackCat.running) callbackCat.running = false
+    loginSign.abort()
+    root.loginCleanup()
+  }
+
+  function signOut() {
+    feedSign.abort()
+    loginSign.abort()
+    root.account = null
+    root.accountExpired = false
+    root.loginStep = ""
+    root.loginError = ""
+    root.seenByView = root.withKey(root.seenByView, "following", [])
+    // The approval on the site is not this plugin's to delete — the API has no
+    // route for it — so the README says where to revoke it.
+    root.removeFiles(root.accountPath, root.keyPath, root.keyPath + ".pub",
+                     root.callbackPath, root.verifierPath, root.desktopPath,
+                     root.accountDir + "/sign-feed", root.accountDir + "/sign-feed.sig",
+                     root.accountDir + "/sign-login", root.accountDir + "/sign-login.sig")
+    root.refresh(true)
+  }
+
+  function toggleAccount() {
+    if (root.signingIn) root.cancelLogin()
+    else if (root.signedIn && !root.accountExpired) root.signOut()
+    else root.startLogin()
+  }
+
+  function accountTooltip() {
+    if (root.signingIn) return strings.t("account.pending", "Waiting for the browser — click to cancel")
+    if (root.signedIn && !root.accountExpired) {
+      return root.fill(strings.t("account.signedIn", "Signed in as @%1 — click to sign out"), root.accountName)
+    }
+    if (root.accountExpired) return strings.t("account.renew", "Sign in again")
+    return strings.t("account.signIn", "Sign in with GitHub")
   }
 
   // ---- Commit actions ---------------------------------------------------
@@ -1048,20 +1640,47 @@ Panel {
               }
             }
 
-            PanelActionButton {
+            Row {
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              iconText: "\uf021"  // nf-fa-refresh; spins while a fetch is in flight
-              foreground: root.barForeground
-              tooltipText: strings.t("action.refresh", "Refresh (r)")
-              onClicked: root.refresh(true)
+              spacing: Style.space(4)
 
-              RotationAnimator on rotation {
-                running: root.loading && !Style.reduceMotion
-                from: 0
-                to: 360
-                duration: 900
-                loops: Animation.Infinite
+              // Signed out this is the way in; signed in it says who, and a
+              // click signs out. While the browser is open it is the cancel.
+              PanelActionButton {
+                id: accountButton
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.signedIn && !root.accountExpired
+                  ? "\uf007"  // nf-fa-user
+                  : (root.signingIn ? "\uf017" : "\uf09b")  // clock / github
+                foreground: root.accountExpired ? Commons.Color.urgent : root.barForeground
+                tooltipText: root.accountTooltip()
+                onClicked: root.toggleAccount()
+
+                RotationAnimator on rotation {
+                  running: root.signingIn && !Style.reduceMotion
+                  from: 0
+                  to: 360
+                  duration: 1400
+                  loops: Animation.Infinite
+                }
+              }
+
+              PanelActionButton {
+                id: refreshButton
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "\uf021"  // nf-fa-refresh; spins while a fetch is in flight
+                foreground: root.barForeground
+                tooltipText: strings.t("action.refresh", "Refresh (r)")
+                onClicked: root.refresh(true)
+
+                RotationAnimator on rotation {
+                  running: root.loading && !Style.reduceMotion
+                  from: 0
+                  to: 360
+                  duration: 900
+                  loops: Animation.Infinite
+                }
               }
             }
           }
@@ -1138,6 +1757,24 @@ Panel {
                 : strings.t("notify.action.on", "Notifications off — click to unmute")
               onClicked: root.toggleNotify()
             }
+          }
+
+          // ---- Sign-in progress and errors ----------------------------
+          // The browser is the only place the approval can happen, so the
+          // panel says what it is waiting for instead of looking stuck.
+          Text {
+            width: parent.width
+            visible: root.signingIn || (root.loginStep === "error" && root.loginError !== "")
+            text: root.loginStep === "error"
+              ? root.loginError
+              : (root.loginStep === "waiting"
+                ? strings.t("account.approve", "Approve the /dev/null app in your browser, then come back here.")
+                : strings.t("account.preparing", "Preparing the sign-in…"))
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.loginStep === "error" ? Commons.Color.urgent : Qt.darker(root.barForeground, 1.35)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
           }
 
           // ---- Profile card for a looked-up user ----------------------
@@ -1253,7 +1890,9 @@ Panel {
                 PanelActionButton {
                   id: watchButton
                   anchors.verticalCenter: parent.verticalCenter
-                  visible: !!root.lookup
+                  // Signed in, Following is the site's own follow graph, so a
+                  // watch button here would promise something it cannot do.
+                  visible: !!root.lookup && !root.signedIn
                   iconText: root.lookup && root.isWatched(root.lookup.username) ? "\uf00c" : "\uf067"
                   tooltipText: root.lookup && root.isWatched(root.lookup.username)
                     ? strings.t("action.unwatch", "Stop watching")
@@ -1268,10 +1907,14 @@ Panel {
           // The watchlist used to be invisible: the only way to remove
           // somebody was to find them again in the lookup box. The chips make
           // it a list you can see, open, and prune.
+          //
+          // Signed in they are hidden, because Following is then the site's own
+          // follow graph: the chips would claim an influence they no longer
+          // have, and following people is done on the site.
           Column {
             width: parent.width
             spacing: Style.space(6)
-            visible: root.watchList.length > 0
+            visible: !root.signedIn && root.watchList.length > 0
 
             PanelSectionHeader {
               text: root.fill(strings.t("watch.title", "Watching %1/%2"), [
@@ -1308,8 +1951,27 @@ Panel {
             }
           }
 
+          // Signed in, Following is not this plugin's watchlist any more: it is
+          // the site's own follow graph, and the panel says whose. The chips
+          // would claim an influence they no longer have, and following people
+          // is done on the site.
+          Text {
+            width: parent.width
+            visible: root.signedIn
+            text: root.fill(
+              strings.t("account.following", "Signed in as @%1 — Following is the people they follow on /dev/null."),
+              root.accountName
+            )
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.barForeground, 1.35)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
           PanelSeparator {
-            visible: root.watchList.length > 0 || root.entries.length > 0
+            visible: root.entries.length > 0
+              || (root.signedIn ? root.view === "following" : root.watchList.length > 0)
             foreground: root.barForeground
           }
 
@@ -1382,7 +2044,8 @@ Panel {
           // ---- States -------------------------------------------------
           Text {
             width: parent.width
-            visible: root.entries.length === 0 && root.view === "following" && root.watchList.length === 0
+            visible: root.entries.length === 0 && !root.signedIn
+              && root.view === "following" && root.watchList.length === 0
             text: strings.t("panel.noWatch", "Nobody to watch yet. Look up a username above.")
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -1393,7 +2056,8 @@ Panel {
 
           Text {
             width: parent.width
-            visible: root.entries.length === 0 && root.loading && (root.view !== "following" || root.watchList.length > 0)
+            visible: root.entries.length === 0 && root.loading
+              && (root.view !== "following" || root.signedIn || root.watchList.length > 0)
             text: strings.t("panel.fetching", "Fetching…")
             textFormat: Text.PlainText
             color: Qt.darker(root.barForeground, 1.4)
@@ -1698,6 +2362,178 @@ Panel {
         if (mouse.button === Qt.MiddleButton) root.openProfile(commitRow.entry.authorUsername)
         else if (mouse.button === Qt.RightButton) root.copyCommitUrl(commitRow.entry)
         else root.openCommit(commitRow.entry)
+      }
+    }
+  }
+
+  // One signed API request: a nonce, the message ssh-keygen signs, the armored
+  // signature reduced to the header's base64, and the request itself. Every
+  // step is a process of its own because the Process here cannot write to a
+  // stdin and close it — ssh-keygen reads the message from a file it wrote,
+  // and its signature from another.
+  component SignedRequest: Item {
+    id: signRequest
+    visible: false
+
+    required property string keyPath
+    required property string directory
+    // Names the files one sender owns, so two requests in flight cannot
+    // overwrite each other's message.
+    required property string slot
+
+    signal finished(string body, int status)
+    signal failed(string reason)
+
+    // "" when idle, otherwise the step this request is on. A reply that arrives
+    // after abort() lands on "" and is dropped.
+    property string step: ""
+    property string method: "GET"
+    property string path: ""
+    property string body: ""
+    property string timestamp: ""
+    property string nonce: ""
+
+    readonly property string messagePath: signRequest.directory === ""
+      ? "" : signRequest.directory + "/" + signRequest.slot
+    readonly property string signaturePath: signRequest.messagePath + ".sig"
+
+    function send(requestMethod, pathAndQuery, requestBody) {
+      signRequest.abort()
+      if (signRequest.keyPath === "" || signRequest.messagePath === "") {
+        signRequest.fail("missing")
+        return
+      }
+      signRequest.method = String(requestMethod)
+      signRequest.path = String(pathAndQuery)
+      signRequest.body = String(requestBody === undefined || requestBody === null ? "" : requestBody)
+      // Seconds, which is what the header carries. The server allows a small
+      // window either side of its own clock.
+      signRequest.timestamp = String(Math.floor(Date.now() / 1000))
+      signRequest.step = "nonce"
+      nonceProc.command = ["od", "-An", "-N16", "-tx1", "/dev/urandom"]
+      nonceProc.running = true
+    }
+
+    function abort() {
+      signRequest.step = ""
+      if (nonceProc.running) nonceProc.running = false
+      if (sigRemoveProc.running) sigRemoveProc.running = false
+      if (signProc.running) signProc.running = false
+      if (catProc.running) catProc.running = false
+      if (curlProc.running) curlProc.running = false
+    }
+
+    function fail(reason) {
+      signRequest.step = ""
+      signRequest.failed(String(reason))
+    }
+
+    // The bytes to sign, or "" when the request is not the shape the server
+    // checks — in which case nothing reaches the key.
+    function message() {
+      return Model.signedMessage(signRequest.timestamp, signRequest.nonce, signRequest.method,
+                                 signRequest.path, signRequest.body)
+    }
+
+    function sign() {
+      var text = signRequest.message()
+      if (text === "") {
+        signRequest.fail("message")
+        return
+      }
+      // blockWrites on the FileView: ssh-keygen has to see the file by now.
+      messageFile.setText(text)
+      // ssh-keygen refuses to overwrite an existing .sig, silently and with a
+      // zero exit status, so a stale one from an earlier request has to go.
+      signRequest.step = "sign"
+      sigRemoveProc.command = ["rm", "-f", signRequest.signaturePath]
+      sigRemoveProc.running = true
+    }
+
+    FileView {
+      id: messageFile
+      path: signRequest.messagePath
+      blockWrites: true
+      atomicWrites: true
+      printErrors: false
+    }
+
+    Process {
+      id: nonceProc
+      stdout: StdioCollector {
+        waitForEnd: true
+        onStreamFinished: {
+          if (signRequest.step !== "nonce") return
+          var hex = Model.hexFromOd(text)
+          if (!/^[0-9a-f]{32}$/.test(hex)) {
+            signRequest.fail("nonce")
+            return
+          }
+          signRequest.nonce = hex
+          signRequest.sign()
+        }
+      }
+    }
+
+    Process {
+      id: sigRemoveProc
+      onExited: function(code) {
+        if (signRequest.step !== "sign") return
+        signProc.command = [
+          "ssh-keygen", "-Y", "sign", "-n", Model.AUTH_NAMESPACE,
+          "-f", signRequest.keyPath, signRequest.messagePath
+        ]
+        signProc.running = true
+      }
+    }
+
+    Process {
+      id: signProc
+      onExited: function(code) {
+        if (signRequest.step !== "sign") return
+        // A zero exit with no signature is the same refusal as an error: the
+        // cat below finds nothing and the request is dropped.
+        if (code !== 0) {
+          signRequest.fail("sign")
+          return
+        }
+        catProc.command = ["cat", signRequest.signaturePath]
+        catProc.running = true
+      }
+    }
+
+    Process {
+      id: catProc
+      stdout: StdioCollector {
+        waitForEnd: true
+        onStreamFinished: {
+          if (signRequest.step !== "sign") return
+          var args = Model.signedFetchArgs(signRequest.method, signRequest.path,
+                                           signRequest.timestamp, signRequest.nonce, text,
+                                           signRequest.body)
+          if (args.length === 0) {
+            signRequest.fail("signature")
+            return
+          }
+          signRequest.step = "request"
+          curlProc.command = args
+          curlProc.running = true
+        }
+      }
+    }
+
+    Process {
+      id: curlProc
+      stdout: StdioCollector {
+        waitForEnd: true
+        onStreamFinished: {
+          if (signRequest.step !== "request") return
+          var split = Model.splitStatus(text)
+          signRequest.step = ""
+          signRequest.body = ""
+          signRequest.nonce = ""
+          signRequest.finished(split.body, split.status)
+        }
       }
     }
   }

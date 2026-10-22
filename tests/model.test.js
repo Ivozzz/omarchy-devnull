@@ -526,3 +526,257 @@ test("a log page cannot smuggle markup or a foreign URL into a row", () => {
   assert.ok(!kept[0].body.includes("<"))
   assert.ok(!kept[0].body.includes("tracker.invalid"))
 })
+
+// ---- signing in ---------------------------------------------------------
+//
+// The flow is the mobile app's: a browser approves an SSH key for the account,
+// and every request afterwards is signed with it. What the model owns is the
+// shape of every byte that leaves the plugin — the message ssh-keygen signs,
+// the headers it goes in, the page the browser opens, and the one-time code
+// that comes back. The panel owns the processes that carry them.
+
+const TS = "1761220800"
+const NONCE = "0123456789abcdef0123456789abcdef"
+const SIGNATURE_ARMOR = "-----BEGIN SSH SIGNATURE-----\n" +
+  "U1NIU0lHAAAAAQAAAB0AAAALc3NoLWVkMjU1MTkAAAAg\n" +
+  "-----END SSH SIGNATURE-----\n"
+
+test("logApiPath names the signed logs and nothing else", () => {
+  assert.equal(Model.logApiPath("following"), "/api/v1/log/following")
+  assert.equal(Model.logApiPath("Latest"), "/api/v1/log/latest")
+  assert.equal(Model.logApiPath("trending"), "/api/v1/log/trending")
+  for (const value of ["", "log/latest", "../me", "latest?cursor=1", null, undefined]) {
+    assert.equal(Model.logApiPath(value), "", `should reject ${JSON.stringify(value)}`)
+  }
+})
+
+test("signedPath is an allowlist, not a passthrough", () => {
+  assert.equal(Model.signedPath("/api/v1/log/following"), "/api/v1/log/following")
+  assert.equal(Model.signedPath("/api/v1/devices"), "/api/v1/devices")
+  for (const value of [
+    "/api/v1/me",
+    "/api/v1/users/nunomaduro",
+    "/api/v1/log/following?page=2",
+    "/api/v1/devices/../log/latest",
+    "https://evil.example/api/v1/devices",
+    "",
+    null
+  ]) {
+    assert.equal(Model.signedPath(value), "", `should refuse ${value}`)
+  }
+})
+
+test("signedMessage is the byte string the server checks", () => {
+  assert.equal(
+    Model.signedMessage(TS, NONCE, "GET", "/api/v1/log/following", ""),
+    `${TS}\n${NONCE}\nGET\n/api/v1/log/following\n`
+  )
+
+  // Every part has to be the shape the server verifies, or nothing is signed.
+  assert.equal(Model.signedMessage("12345", NONCE, "GET", "/api/v1/log/following", ""), "")
+  assert.equal(Model.signedMessage(TS + "x", NONCE, "GET", "/api/v1/log/following", ""), "")
+  assert.equal(Model.signedMessage(TS, NONCE.toUpperCase(), "GET", "/api/v1/log/following", ""), "")
+  assert.equal(Model.signedMessage(TS, NONCE.slice(1), "GET", "/api/v1/log/following", ""), "")
+  assert.equal(Model.signedMessage(TS, NONCE, "DELETE", "/api/v1/log/following", ""), "")
+  assert.equal(Model.signedMessage(TS, NONCE, "GET", "/api/v1/me", ""), "")
+  assert.equal(Model.signedMessage(TS, NONCE, "POST", "/api/v1/devices", "x".repeat(4097)), "")
+})
+
+test("signatureBody takes the armor off and nothing else", () => {
+  const body = Model.signatureBody(SIGNATURE_ARMOR)
+  assert.match(body, /^[A-Za-z0-9+/=]{40,4096}$/)
+  assert.ok(!body.includes("-") && !body.includes("\n"))
+
+  for (const value of ["", "not a signature", "<html>", "-----BEGIN SSH SIGNATURE-----\nshort\n", null]) {
+    assert.equal(Model.signatureBody(value), "", `should refuse ${JSON.stringify(value)}`)
+  }
+})
+
+test("signedFetchArgs carries the headers and never hides the status", () => {
+  const signature = Model.signatureBody(SIGNATURE_ARMOR)
+  const args = Model.signedFetchArgs("GET", "/api/v1/log/following", TS, NONCE, signature, "")
+
+  assert.equal(args[0], "curl")
+  assert.ok(args.includes(`X-Devnull-Timestamp: ${TS}`))
+  assert.ok(args.includes(`X-Devnull-Nonce: ${NONCE}`))
+  assert.ok(args.includes(`X-SSH-Signature: ${signature}`))
+  // The status has to survive as the last line: a revoked device answers 401
+  // with a body, and the panel says "sign in again" off that status.
+  assert.equal(args[args.indexOf("-w") + 1], "\n%{http_code}")
+  assert.ok(!args.includes("-f"))
+  assert.equal(args.at(-1), "https://dev-null.sh/api/v1/log/following")
+  assert.ok(!args.includes("-X"))
+
+  const post = Model.signedFetchArgs("POST", "/api/v1/devices", TS, NONCE, signature, '{"code":"x"}')
+  assert.equal(post[post.indexOf("-X") + 1], "POST")
+  assert.equal(post[post.indexOf("--data-binary") + 1], '{"code":"x"}')
+
+  // Anything the model did not build is refused whole, never partly built.
+  assert.deepEqual(Model.signedFetchArgs("GET", "https://evil.example/api/v1/log/following", TS, NONCE, signature, ""), [])
+  assert.deepEqual(Model.signedFetchArgs("GET", "/api/v1/me", TS, NONCE, signature, ""), [])
+  assert.deepEqual(Model.signedFetchArgs("GET", "/api/v1/log/following", TS, NONCE, "<html>", ""), [])
+  assert.deepEqual(Model.signedFetchArgs("DELETE", "/api/v1/log/following", TS, NONCE, signature, ""), [])
+  // A POST with no body has nothing to sign.
+  assert.deepEqual(Model.signedFetchArgs("POST", "/api/v1/devices", TS, NONCE, signature, ""), [])
+})
+
+test("authorizeUrl pins every parameter it builds", () => {
+  const fingerprint = "SHA256:" + "A".repeat(43)
+  const challenge = "B".repeat(43)
+  const state = "c".repeat(32)
+
+  const url = Model.authorizeUrl({ fingerprint, deviceName: "Omarchy bar", challenge, state })
+  assert.ok(url.startsWith("https://dev-null.sh/mobile/authorize?"))
+  const query = new URL(url).searchParams
+  assert.equal(query.get("fingerprint"), fingerprint)
+  assert.equal(query.get("device_name"), "Omarchy bar")
+  assert.equal(query.get("code_challenge"), challenge)
+  assert.equal(query.get("code_challenge_method"), "S256")
+  assert.equal(query.get("state"), state)
+  // The one redirect the site accepts for the approval page, so the code can
+  // only come back to the plugin's own handler.
+  assert.equal(query.get("redirect_uri"), "devnull://authorize")
+
+  assert.equal(Model.authorizeUrl({ fingerprint: "SHA256:short", deviceName: "x", challenge, state }), "")
+  assert.equal(Model.authorizeUrl({ fingerprint, deviceName: "", challenge, state }), "")
+  assert.equal(Model.authorizeUrl({ fingerprint, deviceName: "x", challenge: challenge.slice(1) + "+", state }), "")
+  assert.equal(Model.authorizeUrl({ fingerprint, deviceName: "x", challenge, state: state.toUpperCase() }), "")
+  assert.equal(Model.authorizeUrl(null), "")
+})
+
+test("parseCallbackUrl only redeems its own redirect and state", () => {
+  const state = "a".repeat(32)
+  const code = "b".repeat(64)
+
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize?state=${state}&code=${code}`, state), code)
+
+  // GIO's launcher re-serialises the empty path as "/", and that is still the
+  // same callback; anything else past the scheme is not.
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize/?state=${state}&code=${code}`, state), code)
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize/?state=${"c".repeat(32)}&code=${code}`, state), "")
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize/x?state=${state}&code=${code}`, state), "")
+
+  // A state from another attempt, another scheme, another path, a missing or
+  // malformed code: nothing is redeemed.
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize?state=${"c".repeat(32)}&code=${code}`, state), "")
+  assert.equal(Model.parseCallbackUrl(`devnullx://authorize?state=${state}&code=${code}`, state), "")
+  assert.equal(Model.parseCallbackUrl(`devnull://login?state=${state}&code=${code}`, state), "")
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize?state=${state}`, state), "")
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize?state=${state}&code=${code.toUpperCase()}`, state), "")
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize?state=${state}&code=${code.slice(1)}`, state), "")
+  assert.equal(Model.parseCallbackUrl("", state), "")
+  assert.equal(Model.parseCallbackUrl(null, state), "")
+  assert.equal(Model.parseCallbackUrl(`devnull://authorize?state=${state}&code=${code}`, ""), "")
+})
+
+test("deviceBody is the redemption the server expects", () => {
+  const code = "b".repeat(64)
+  const verifier = "v".repeat(43)
+
+  assert.deepEqual(JSON.parse(Model.deviceBody(code, verifier)), { code, code_verifier: verifier })
+
+  for (const value of ["", code.slice(1), code.toUpperCase(), "z".repeat(64)]) {
+    assert.equal(Model.deviceBody(value, verifier), "", `code ${value}`)
+  }
+  for (const value of ["", "short", "v".repeat(129)]) {
+    assert.equal(Model.deviceBody(code, value), "", `verifier ${value}`)
+  }
+})
+
+test("base64UrlFromHex is the PKCE challenge the site's regex wants", () => {
+  const { createHash } = require("node:crypto")
+  const verifier = "x".repeat(43)
+  const digest = createHash("sha256").update(verifier)
+
+  const challenge = Model.base64UrlFromHex(digest.copy().digest("hex"))
+  assert.equal(challenge, createHash("sha256").update(verifier).digest("base64url"))
+  assert.match(challenge, /^[A-Za-z0-9_-]{43}$/)
+
+  for (const value of ["", "0".repeat(63), "0".repeat(65), "zz".repeat(32), null]) {
+    assert.equal(Model.base64UrlFromHex(value), "", `should refuse ${JSON.stringify(value)}`)
+  }
+})
+
+test("the tool output is read by its shape, not by position", () => {
+  // od prints hex in columns of whitespace; the run of hex is what is wanted.
+  assert.equal(Model.hexFromOd(" 0a 1b\n 2c 3d\n"), "0a1b2c3d")
+  assert.equal(Model.hexFromOd(" 5f 3A \n"), "5f3a")
+  assert.equal(Model.hexFromOd(""), "")
+
+  assert.equal(Model.digestHex("a".repeat(64) + "  -\n"), "a".repeat(64))
+  assert.equal(Model.digestHex("A".repeat(64) + "  -"), "a".repeat(64))
+  assert.equal(Model.digestHex("junk"), "")
+  assert.equal(Model.digestHex(null), "")
+
+  // ssh-keygen -lf key.pub prints "<bits> SHA256:<43 chars> <comment> (<type>)".
+  assert.equal(
+    Model.fingerprintFromSshKeygen("256 SHA256:" + "A".repeat(43) + " Omarchy bar (ED25519)"),
+    "SHA256:" + "A".repeat(43)
+  )
+  assert.equal(Model.fingerprintFromSshKeygen("key.pub is not a public key file"), "")
+  assert.equal(Model.fingerprintFromSshKeygen(null), "")
+})
+
+test("the account file round trips and refuses anything else", () => {
+  const fingerprint = "SHA256:" + "A".repeat(43)
+  const account = Model.parseAccount(Model.accountJson({ username: "ivo", name: "Ivo" }, fingerprint, "2026-10-22T12:00:00Z"))
+
+  assert.equal(account.username, "ivo")
+  assert.equal(account.name, "Ivo")
+  assert.equal(account.fingerprint, fingerprint)
+  assert.equal(account.device, "Omarchy bar")
+  assert.equal(account.signedInAt, "2026-10-22T12:00:00Z")
+
+  // No usable username or no usable fingerprint is not an account.
+  assert.equal(Model.parseAccount(JSON.stringify({ username: "bad name", fingerprint })), null)
+  assert.equal(Model.parseAccount(JSON.stringify({ username: "ivo", fingerprint: fingerprint.toLowerCase() })), null)
+  assert.equal(Model.parseAccount("not json"), null)
+  assert.equal(Model.parseAccount(""), null)
+
+  assert.equal(Model.accountJson({ username: "bad name" }, fingerprint, ""), "")
+  assert.equal(Model.accountJson({ username: "ivo" }, "nope", ""), "")
+  assert.equal(Model.accountJson(null, fingerprint, ""), "")
+})
+
+test("stateDir follows XDG and never lands in shell.json's directory", () => {
+  assert.equal(Model.stateDir("/home/ivo", ""), "/home/ivo/.local/state/omarchy/devnull")
+  assert.equal(Model.stateDir("/home/ivo", "/tmp/x/"), "/tmp/x/omarchy/devnull")
+  assert.equal(Model.stateDir("", "/tmp/x"), "/tmp/x/omarchy/devnull")
+  assert.equal(Model.stateDir("", ""), "")
+  assert.equal(Model.stateDir(null, undefined), "")
+})
+
+test("desktopEntry points the scheme at the plugin's own script", () => {
+  const script = "/home/ivo/.config/omarchy/plugins/io.github.ivozzz.devnull/bin/devnull-callback"
+  const entry = Model.desktopEntry(script)
+
+  assert.ok(entry.includes("MimeType=x-scheme-handler/devnull;"))
+  assert.ok(entry.includes(`Exec="${script}" %u`))
+  assert.ok(entry.includes("NoDisplay=true"))
+
+  // A path that could smuggle a second key, or break the quoting, is refused
+  // rather than escaped: the plugin never writes one.
+  assert.equal(Model.desktopEntry(""), "")
+  assert.equal(Model.desktopEntry('/tmp/evil" %u\nExec=/bin/sh'), "")
+})
+
+test("splitStatus takes curl's status off the body", () => {
+  assert.deepEqual(Model.splitStatus('{"data":[]}\n200'), { status: 200, body: '{"data":[]}' })
+  assert.deepEqual(
+    Model.splitStatus('{"message":"This key isn\'t approved for this device.","code":"device_not_approved"}\n401'),
+    { status: 401, body: '{"message":"This key isn\'t approved for this device.","code":"device_not_approved"}' }
+  )
+  // No status line at all: a request that never got an answer.
+  assert.deepEqual(Model.splitStatus(""), { status: 0, body: "" })
+  assert.deepEqual(Model.splitStatus("junk"), { status: 0, body: "junk" })
+  assert.deepEqual(Model.splitStatus(null), { status: 0, body: "" })
+})
+
+test("feedList separates an empty feed from an unreadable one", () => {
+  assert.deepEqual(Model.feedList('{"data":[]}'), [])
+  assert.equal(Model.feedList(JSON.stringify({ data: [commit()] })).length, 1)
+  assert.equal(Model.feedList('{"data":{"id":"x"}}'), null)
+  assert.equal(Model.feedList('{"message":"Invalid signature."}'), null)
+  assert.equal(Model.feedList("not json"), null)
+  assert.equal(Model.feedList(""), null)
+})
