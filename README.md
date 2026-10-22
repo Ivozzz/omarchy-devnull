@@ -50,7 +50,7 @@ real follow graph.
 - English and Italian catalogs, following Setup > Language like the built-in
   plugins.
 
-![The panel, on the Following feed](preview.png)
+![The panel, signed in, on the Following feed](screenshot.png)
 
 ## Install
 
@@ -342,7 +342,8 @@ Panel.qml         the popup panel
 Model.js          API and page parsing, validation, merging — no UI in it
 bin/devnull-callback  the devnull:// handler the browser hands the code to
 i18n/             en.json, it.json
-preview.png      the screenshot above, and the marketplace's card source
+screenshot.png    the panel shown above, signed in
+preview.png       the marketplace's card source
 tests/            node and quickshell coverage
 ```
 
