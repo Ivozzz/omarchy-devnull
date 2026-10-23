@@ -13,11 +13,13 @@ real follow graph.
     watch; signed in, the people you follow on the site itself
   - **Latest** — everything on the site, newest first
   - **Trending** — the site's own ranking
-- A bar pill showing what has arrived since the last refresh of that feed
-  (`+3`) in the accent colour, and just the brand mark when nothing has. Each
-  feed keeps its own count, so a commit first read on Latest is still news on
-  the watchlist. A refresh that could not be read shows a warning instead of an
-  empty feed, and the tooltip says why.
+- A bar icon in the Omarchy status-bar style: the two slashes of the
+  /dev/null mark, drawn in the same font, size and slot as the volume or
+  Bluetooth icons. It takes the accent colour when the feed has arrivals since
+  the last refresh, and the urgent colour when a refresh could not be read at
+  all. Each feed keeps its own count, so a commit first read on Latest is still
+  news on the watchlist; the tooltip carries that count and, for a failed
+  refresh, the reason.
 - A panel listing the commits: avatar, handle, short hash, age, up to three
   lines of the commit, and its star and reply counts. A row opens on dev-null.sh
   in the browser; middle click opens the author, right click copies the commit
@@ -69,7 +71,7 @@ Already have it in a folder?
 
 ```bash
 omarchy plugin enable io.github.ivozzz.devnull   # puts it on the bar
-omarchy restart shell                            # only if the pill does not appear
+omarchy restart shell                            # only if the icon does not appear
 ```
 
 ## Remove
@@ -273,8 +275,8 @@ omarchy bar set io.github.ivozzz.devnull notifyNewPosts false
 
 | | |
 |---|---|
-| click the pill | open or close the panel |
-| middle click the pill | refresh now |
+| click the icon | open or close the panel |
+| middle click the icon | refresh now |
 | middle click a row | open the author's profile |
 | right click a row | copy the commit link |
 | chevron on a row | read the whole commit and its replies in place |
@@ -345,7 +347,9 @@ omarchy restart shell
 
 ```
 manifest.json     plugin manifest and the settings schema
-BarWidget.qml     the bar pill
+BarWidget.qml     the bar icon
+DevNullMark.qml   the brand mark, used in the panel header
+assets/           that mark, one file per background
 Panel.qml         the popup panel
 Model.js          API and page parsing, validation, merging — no UI in it
 bin/devnull-callback  the devnull:// handler the browser hands the code to

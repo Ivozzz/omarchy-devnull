@@ -3,21 +3,37 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 
-// The bar pill. Owns no data: everything (fetching, merging, freshness) lives
+// The bar icon. Owns no data: everything (fetching, merging, freshness) lives
 // in the panel it hosts, which stays loaded for the shell session once it has
 // been built.
+//
+// It is the /dev/null mark itself, two slashes, drawn as bar text in the
+// bar's own font and slot: the brand survives at icon scale without an SVG
+// illustration or a count beside it, so it reads as one more status icon.
+// New commits tint it with the accent, a refresh that could not be read with
+// the urgent colour, and the count and the reason stay in the tooltip and in
+// the panel.
 BarWidget {
   id: root
   moduleName: "io.github.ivozzz.devnull"
+
+  // The two slashes of the dev-null.sh mark, in the font every other bar icon
+  // is drawn with. JetBrains Mono has no single glyph with that shape, and the
+  // brand rules out recolouring the SVG, so the mark here is type.
+  readonly property string iconGlyph: "//"
 
   readonly property var panelItem: panelLoader.item
   readonly property bool opened: panelItem ? panelItem.opened === true : false
   readonly property bool popoutSwitchClosing: panelItem ? panelItem.popoutSwitchClosing === true : false
 
-  // The brand mark takes the place of the old terminal glyph. 72% of the bar
-  // height keeps the two slashes above the brand's 16px floor without the
-  // count beside them shrinking.
-  readonly property real markSize: Math.round(barSize * 0.72)
+  // Accent for something new, urgent for a feed that could not be read at
+  // all: without the old count, colour is what still tells an empty feed from
+  // a failed one. A refresh that lost one user out of four keeps the plain
+  // foreground; the panel's status line is where that belongs.
+  readonly property bool failed: panelItem ? panelItem.hasFailures === true : false
+  readonly property bool iconActive: panelItem
+    ? (panelItem.hasFresh === true || ((panelItem.entries || []).length === 0 && failed))
+    : false
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -69,80 +85,18 @@ BarWidget {
     }
   }
 
-  WidgetButton {
+  BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // WidgetButton paints itself at opacity 0 unless `text` is non-empty;
-    // labelVisible keeps its own label off, since the Row below draws the
-    // glyph and the count itself.
-    text: panelItem ? panelItem.barText : "–"
-    labelVisible: false
-    keepSpace: true
-    fixedWidth: vertical ? barSize : horizontalContent.implicitWidth + Style.space(12)
-    fixedHeight: vertical ? verticalContent.implicitHeight + Style.space(10) : barSize
-    foreground: panelItem ? panelItem.barForeground : (root.bar ? root.bar.barForeground : Color.foreground)
-    fontSize: Style.font.caption
-    horizontalMargin: Style.space(6)
-    // Accent for something new, urgent for a feed that could not be read at
-    // all: an empty pill and a failed one used to look the same. A refresh
-    // that lost one user out of four keeps the ordinary pill — the panel's
-    // status line is where that belongs.
-    active: panelItem
-      ? (panelItem.hasFresh === true
-        || (panelItem.entries.length === 0 && panelItem.hasFailures === true))
-      : false
-    activeColor: panelItem && panelItem.hasFailures === true ? Commons.Color.urgent : Commons.Color.accent
+    text: root.iconGlyph
+    slotSize: Style.bar.statusSlot
+    activeColor: root.failed ? Commons.Color.urgent : Commons.Color.accent
+    active: root.iconActive
     tooltipText: panelItem ? panelItem.tooltipText : "…"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.refresh()
       else root.togglePanel()
-    }
-
-    Row {
-      id: horizontalContent
-      visible: !button.vertical
-      anchors.centerIn: parent
-      spacing: Style.space(5)
-
-      DevNullMark {
-        anchors.verticalCenter: parent.verticalCenter
-        size: root.markSize
-        surroundingColor: button.foreground
-      }
-
-      Text {
-        anchors.verticalCenter: parent.verticalCenter
-        text: panelItem ? panelItem.barText : "–"
-        textFormat: Text.PlainText
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
-      }
-    }
-
-    Column {
-      id: verticalContent
-      visible: button.vertical
-      anchors.centerIn: parent
-      spacing: Style.space(2)
-
-      DevNullMark {
-        anchors.horizontalCenter: parent.horizontalCenter
-        size: root.markSize
-        surroundingColor: button.foreground
-      }
-
-      Text {
-        anchors.horizontalCenter: parent.horizontalCenter
-        text: panelItem ? panelItem.barText : "–"
-        textFormat: Text.PlainText
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
-      }
     }
   }
 }

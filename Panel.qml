@@ -229,20 +229,18 @@ Panel {
 
   // ---- Bar contract -----------------------------------------------------
   readonly property bool hasFresh: freshCount > 0
-  // The pill counts what arrived, not what the feed holds: the feed size is
-  // almost always the same number (40), so it read as decoration. With nothing
-  // new, a space keeps WidgetButton painted — it hides itself at empty text —
-  // and the brand mark stands alone.
-  readonly property string barText: {
-    if (root.entries.length === 0)
-      return root.hasFailures ? "!" : (root.loading ? "…" : "–")
-    if (root.freshCount > 0) return "+" + Commons.I18n.formatNumber(root.freshCount)
-    return " "
-  }
+  // The bar shows a single glyph, so the count it used to paint beside the
+  // mark lives in the tooltip. It counts what arrived, not what the feed
+  // holds: the feed size is almost always the same number (40), so it read as
+  // decoration there.
   readonly property string tooltipText: root.fill(
     strings.tn("panel.commits", entries.length, "%1 commits"),
     Commons.I18n.formatNumber(entries.length)
   ) + " · " + root.viewLabel(root.view)
+    + (root.freshCount > 0
+      ? " · " + root.fill(strings.tn("panel.fresh", freshCount, "%1 new"),
+        Commons.I18n.formatNumber(root.freshCount))
+      : "")
     + (root.hasFailures ? " · " + root.statusText : "")
 
   readonly property string summaryText: {

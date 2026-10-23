@@ -119,9 +119,11 @@ ShellRoot {
     // here: that would write to shell.json while the tests run.
     shell.expect("toggle is a real function", typeof panel.toggleNotify === "function")
 
-    // With no feed yet the pill shows a placeholder, never a stale count; the
-    // timer may already have a request in flight, hence the two.
-    shell.expect("idle bar text", panel.barText === "–" || panel.barText === "…", panel.barText)
+    // With no feed yet the tooltip says what the panel holds, and it is now
+    // the only place the count lives; the timer may already have a request in
+    // flight, hence no exact number.
+    shell.expect("the tooltip carries the count",
+      panel.tooltipText.indexOf("commit") !== -1, panel.tooltipText)
     shell.expect("nothing fresh at rest", panel.hasFresh === false)
     shell.expect("refresh minute clamped", panel.refreshMinutes >= 1 && panel.refreshMinutes <= 60, String(panel.refreshMinutes))
 
@@ -151,13 +153,14 @@ ShellRoot {
     shell.expect("the callback handler resolves beside the panel",
       panel.callbackScript.length > 0 && /devnull-callback$/.test(panel.callbackScript), panel.callbackScript)
 
-    // The brand mark: light text on a dark bar picks the "on dark" file, and
-    // the mark keeps a size that clears the brand's 16px floor at the default
-    // bar height.
+    // The bar slot draws the dev-null.sh mark, two slashes, as text in the
+    // bar's own font; the SVG mark survives in the panel header only.
+    shell.expect("the bar draws the brand's two slashes",
+      widget.iconGlyph === "//", JSON.stringify(widget.iconGlyph))
+    shell.expect("the pill no longer paints a count of its own",
+      widget.panelItem.barText === undefined, String(widget.panelItem.barText))
     shell.expect("mark follows a light label", String(markOnDark.source).indexOf("dev-null-mark-on-dark.svg") !== -1, String(markOnDark.source))
     shell.expect("mark follows a dark label", String(markOnLight.source).indexOf("dev-null-mark-on-light.svg") !== -1, String(markOnLight.source))
-    shell.expect("mark clears the 16px floor at the default bar",
-      widget.markSize >= 18, String(widget.markSize))
 
     // Markup-shaped input must not reach a Text or a tooltip, whatever sink
     // it lands in.
@@ -281,10 +284,14 @@ ShellRoot {
     shell.expect("priming does not count as fresh", panel.freshCount === 0, String(panel.freshCount))
     panel.applyFeed(page.concat(freshFeed))
     shell.expect("a new commit counts once", panel.freshCount === 1, String(panel.freshCount))
-    shell.expect("the pill counts it", panel.barText === "+1", panel.barText)
+    shell.expect("a new commit is announced in the tooltip",
+      panel.tooltipText.indexOf("1 new") !== -1, panel.tooltipText)
+    shell.expect("a new commit lights the glyph", widget.iconActive === true)
     panel.applyFeed(page.concat(freshFeed))
     shell.expect("the same refresh again counts nothing", panel.freshCount === 0, String(panel.freshCount))
-    shell.expect("a quiet pill shows no count", panel.barText === " ", JSON.stringify(panel.barText))
+    shell.expect("a quiet feed drops the count from the tooltip",
+      panel.tooltipText.indexOf("new") === -1, panel.tooltipText)
+    shell.expect("a quiet feed leaves the glyph plain", widget.iconActive === false)
     shell.expect("no click target without a url",
       panel.notifyArgv({count: 1, authors: ["brendt"], authorCount: 1, newest: {body: "x", url: ""}}).indexOf("--exec") === -1)
 
@@ -333,7 +340,7 @@ ShellRoot {
       Qt.callLater(function() {
         var after = shell.contentHeight(panel)
         shell.expect("rows laid out", after > before + 200, before + " -> " + after)
-        shell.expect("the pill counts what arrived", panel.barText === "+6", panel.barText)
+        shell.expect("six arrivals are counted", panel.freshCount === 6, String(panel.freshCount))
 
         // The status line is the only place a partially failed refresh was
         // ever visible; it also carries how old the feed is. Both are checked
@@ -346,11 +353,13 @@ ShellRoot {
           panel.hasFailures && panel.statusText.indexOf("<") === -1, panel.statusText)
 
         // A feed that never arrived used to look exactly like an empty one in
-        // the bar. It now shows a warning, and the tooltip carries the reason.
+        // the bar. It now tints the glyph with the urgent colour, and the
+        // tooltip carries the reason.
         var beforeEntries = panel.entries
         var beforeSuccess = panel.lastSuccessMs
         panel.entries = []
-        shell.expect("a failed feed shows a warning in the pill", panel.barText === "!", panel.barText)
+        shell.expect("a failed feed tints the glyph",
+          panel.hasFailures === true && widget.iconActive === true && widget.failed === true)
         shell.expect("the tooltip explains the failure",
           panel.tooltipText.indexOf("<") === -1 && panel.tooltipText.length > 0, panel.tooltipText)
         panel.entries = beforeEntries
