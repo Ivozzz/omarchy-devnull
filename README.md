@@ -21,8 +21,8 @@ real follow graph.
 - A panel listing the commits: avatar, handle, short hash, age, up to three
   lines of the commit, and its star and reply counts. A row opens on dev-null.sh
   in the browser; middle click opens the author, right click copies the commit
-  link, and the chevron expands the row to the whole commit without leaving the
-  panel.
+  link, and the chevron expands the row to the whole commit and the first
+  replies to it without leaving the panel.
 - A status line under the feed tabs: how old the feed is, how many watched users
   failed, and a retry that asks only the ones that did. The line is there even
   while rows are on screen, so a partial refresh cannot pass for a complete one.
@@ -138,6 +138,14 @@ The API allows 60 requests per minute per IP. A Following refresh costs one
 request per watched user — two when replies are included — and runs them one at
 a time; the other two cost a single page each. Five minutes and a handful of
 users stays well inside it.
+
+The replies to a single commit are not on that API:
+`/api/v1/commits/{id}/replies` answers `401` without a signature. They are read
+off the commit page itself, whose Inertia payload carries them in a `replies`
+prop — three per page, with a cursor for the rest. Expanding a row therefore
+costs one request for that page, and the panel shows what it brought while
+pointing at the site for the remainder. The page is kept for the visit, so
+reopening the same row costs nothing.
 
 Signed in, the picture is simpler: all three feeds come from the site's own
 signed API — `GET /api/v1/log/following`, `/latest`, `/trending` — one request
@@ -269,7 +277,7 @@ omarchy bar set io.github.ivozzz.devnull notifyNewPosts false
 | middle click the pill | refresh now |
 | middle click a row | open the author's profile |
 | right click a row | copy the commit link |
-| chevron on a row | read the whole commit in place |
+| chevron on a row | read the whole commit and its replies in place |
 | `1` `2` `3` | Following / Latest / Trending |
 | `←` / `→` | previous / next feed |
 | `↑` / `↓` | move the row cursor |

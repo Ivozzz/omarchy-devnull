@@ -74,7 +74,7 @@ Panel {
     // The count belonged to the feed being left; the bar must not show it over
     // the new tab before that feed has answered.
     root.freshCount = 0
-    root.expandedId = ""
+    root.collapseExpanded()
     root.copiedId = ""
     // Whatever is in flight belongs to the feed being left. Bumping the epoch
     // here, not only when the reload starts, closes the gap in which a late
@@ -319,7 +319,7 @@ Panel {
   onOpenedChanged: {
     root.nowMs = Date.now()
     root.resetCursor()
-    root.expandedId = ""
+    root.collapseExpanded()
     root.copiedId = ""
     if (root.opened) Qt.callLater(root.scrollFeedToTop)
   }
@@ -825,6 +825,16 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onPageResponse(text)
+    }
+  }
+
+  // The commit page a row's replies are read from. One at a time: opening a
+  // second row cancels the first rather than racing it.
+  Process {
+    id: repliesProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onRepliesResponse(text)
     }
   }
 
@@ -1441,10 +1451,20 @@ Panel {
   }
 
   // ---- Commit actions ---------------------------------------------------
-  // Which row is expanded to its full body, and which one just had its link
-  // copied — a row that answers a right click with nothing looks broken.
+  // Which row is expanded to its full body and replies, and which one just had
+  // its link copied — a row that answers a right click with nothing looks
+  // broken.
   property string expandedId: ""
   property string copiedId: ""
+  // One commit page per row, kept for the visit: expanding the same row twice
+  // must not spend a second request on it.
+  property var replyPages: ({})
+  property bool repliesLoading: false
+  property bool repliesFailed: false
+  // A reply that arrives after the row was collapsed, or after another row was
+  // opened, belongs to a request nobody is waiting for any more.
+  property int repliesEpoch: 0
+  property int repliesActiveEpoch: 0
 
   function openCommit(entry) {
     // Rebuilt in the model from a validated username and id, so this is a
@@ -1463,7 +1483,85 @@ Panel {
   }
 
   function toggleExpanded(id) {
-    root.expandedId = root.expandedId === id ? "" : id
+    if (root.expandedId === id) {
+      root.collapseExpanded()
+      return
+    }
+    root.cancelReplies()
+    root.expandedId = id
+    root.loadReplies(id)
+  }
+
+  function collapseExpanded() {
+    root.expandedId = ""
+    root.cancelReplies()
+  }
+
+  // Drops whatever reply request is in flight and anything waiting on it. The
+  // epoch, not this, is what makes a late stdout callback harmless.
+  function cancelReplies() {
+    root.repliesEpoch += 1
+    root.repliesLoading = false
+    root.repliesFailed = false
+    root.repliesActiveEpoch = 0
+    if (repliesProc.running) repliesProc.running = false
+  }
+
+  function entryById(id) {
+    for (var i = 0; i < root.entries.length; i++) {
+      if (root.entries[i].id === id) return root.entries[i]
+    }
+    return null
+  }
+
+  // The replies to one commit come off its page, not the API. A commit nobody
+  // has answered has nothing to fetch, so expanding it only shows the whole
+  // body.
+  function loadReplies(id) {
+    if (id === "" || root.replyPages[id] !== undefined) return
+    var entry = root.entryById(id)
+    if (!entry || entry.replies <= 0) return
+    var args = Model.commitPageFetchArgs(Model.commitUrl(entry.authorUsername, entry.id))
+    if (args.length === 0) {
+      root.repliesFailed = true
+      return
+    }
+    root.repliesEpoch += 1
+    root.repliesActiveEpoch = root.repliesEpoch
+    root.repliesLoading = true
+    root.repliesFailed = false
+    repliesProc.command = args
+    repliesProc.running = true
+  }
+
+  function onRepliesResponse(raw) {
+    if (root.repliesActiveEpoch !== root.repliesEpoch) return
+    root.repliesLoading = false
+    var id = root.expandedId
+    var page = Model.commitReplies(raw)
+    if (page === null) {
+      root.repliesFailed = true
+      return
+    }
+    root.replyPages = root.withKey(root.replyPages, id, page)
+  }
+
+  function repliesFor(id) {
+    var page = root.replyPages[id]
+    return page ? page.replies : []
+  }
+
+  function repliesRemainingFor(id) {
+    var page = root.replyPages[id]
+    return page ? page.remaining : 0
+  }
+
+  // A commit the feed counted replies for, but whose page carried none (a
+  // deleted or still-moderated answer): the row says so instead of showing an
+  // empty space under the body.
+  function repliesEmptyFor(id) {
+    var page = root.replyPages[id]
+    return page !== undefined && page.replies.length === 0
   }
 
   function openProfile(name) {
@@ -2326,12 +2424,146 @@ Panel {
             font.pixelSize: Style.font.caption
           }
         }
+
+        // ---- Replies ---------------------------------------------
+        // Expanding a row reads its answers in place. The public API has no
+        // replies route, so they come off the commit's own page, which carries
+        // the first three: one request per row, and the line at the bottom says
+        // how many stayed on the site.
+        Column {
+          id: repliesColumn
+          width: parent.width
+          spacing: Style.space(5)
+          visible: commitRow.expanded
+
+          Text {
+            width: parent.width
+            visible: commitRow.entry.replies > 0
+              && root.repliesLoading && root.expandedId === commitRow.entry.id
+            text: strings.t("row.loadingReplies", "Loading replies…")
+            textFormat: Text.PlainText
+            color: Qt.darker(root.barForeground, 1.45)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            font.italic: true
+          }
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            visible: root.repliesFailed && root.expandedId === commitRow.entry.id
+            text: strings.t("row.repliesFailed", "Could not read the replies.")
+            textFormat: Text.PlainText
+            color: Qt.darker(root.barForeground, 1.45)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            width: parent.width
+            visible: commitRow.entry.replies === 0 || root.repliesEmptyFor(commitRow.entry.id)
+            text: strings.t("row.noReplies", "No replies yet.")
+            textFormat: Text.PlainText
+            color: Qt.darker(root.barForeground, 1.55)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            font.italic: true
+          }
+
+          Repeater {
+            model: root.repliesFor(commitRow.entry.id)
+
+            Row {
+              id: replyRow
+              required property var modelData
+              width: repliesColumn.width
+              spacing: Style.space(8)
+
+              SizedImage {
+                width: Style.space(18)
+                height: Style.space(18)
+                visible: root.showAvatars && replyRow.modelData.avatarUrl !== ""
+                url: replyRow.modelData.avatarUrl
+              }
+
+              Column {
+                width: replyRow.width - Style.space(18) - replyRow.spacing
+                spacing: Style.space(1)
+
+                Row {
+                  width: parent.width
+                  spacing: Style.space(6)
+
+                  Text {
+                    text: "@" + replyRow.modelData.authorUsername
+                    textFormat: Text.PlainText
+                    color: root.barForeground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+
+                  Text {
+                    width: Math.max(0, parent.width - x - Style.space(40))
+                    text: root.ageLabel(replyRow.modelData.createdAt)
+                    textFormat: Text.PlainText
+                    horizontalAlignment: Text.AlignRight
+                    elide: Text.ElideRight
+                    color: Qt.darker(root.barForeground, 1.6)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  text: replyRow.modelData.body
+                  textFormat: Text.PlainText
+                  wrapMode: Text.WordWrap
+                  maximumLineCount: 3
+                  elide: Text.ElideRight
+                  color: Qt.darker(root.barForeground, 1.2)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+
+                // A reply that was answered in turn: the count is there, the
+                // answers themselves are one click away on the site.
+                Text {
+                  visible: replyRow.modelData.replies > 0
+                  text: "\uf0e0 " + Commons.I18n.formatNumber(replyRow.modelData.replies)
+                  textFormat: Text.PlainText
+                  color: Qt.darker(root.barForeground, 1.5)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+          }
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            visible: root.repliesRemainingFor(commitRow.entry.id) > 0
+            text: root.fill(
+              strings.tn("row.moreReplies", root.repliesRemainingFor(commitRow.entry.id), "%1 more replies on dev-null.sh"),
+              Commons.I18n.formatNumber(root.repliesRemainingFor(commitRow.entry.id))
+            )
+            textFormat: Text.PlainText
+            color: Qt.darker(root.barForeground, 1.45)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            font.italic: true
+          }
+        }
       }
     }
 
-    // The body stays in the panel: clicking the row still opens the commit,
-    // while this chevron reads the whole thing in place. z keeps it above the
-    // row's MouseArea, which covers the rest of the surface.
+    // The row's body stays in the panel: clicking the row still opens the
+    // commit, while this chevron reads the whole thing and its replies in
+    // place. z keeps it above the row's MouseArea, which covers the rest of
+    // the surface.
     PanelActionButton {
       id: expandButton
       z: 2
@@ -2342,8 +2574,15 @@ Panel {
       iconText: commitRow.expanded ? "\uf077" : "\uf078"  // chevron up / down
       foreground: Qt.darker(root.barForeground, 1.4)
       tooltipText: commitRow.expanded
-        ? strings.t("row.collapse", "Collapse")
-        : strings.t("row.expand", "Show full commit")
+        ? (commitRow.entry.replies > 0
+          ? strings.t("row.hideReplies", "Hide replies")
+          : strings.t("row.collapse", "Collapse"))
+        : (commitRow.entry.replies > 0
+          ? root.fill(
+            strings.tn("row.showReplies", commitRow.entry.replies, "Show %1 replies"),
+            Commons.I18n.formatNumber(commitRow.entry.replies)
+          )
+          : strings.t("row.expand", "Show full commit"))
       onClicked: root.toggleExpanded(commitRow.entry.id)
     }
 

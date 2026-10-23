@@ -13,6 +13,10 @@
 //                                          asks twice
 //   GET /api/v1/commits/{id}               one commit
 //
+// The replies to one commit are not on the public API: /api/v1/commits/{id}/replies
+// answers 401 without a signature. They are read off the commit page itself,
+// whose Inertia payload carries them in a `replies` prop (three per page).
+//
 // Rate limit: 60 requests per minute per IP. There is no global timeline
 // endpoint and no search, so the plugin's feed is the merged commit log of a
 // watchlist of usernames.
@@ -253,6 +257,23 @@ function logUrl(name) {
 function pageFetchArgs(url) {
   var s = String(url === undefined || url === null ? "" : url);
   if (s !== logUrl("latest") && s !== logUrl("trending")) return [];
+  return [
+    "curl", "-fsS", "--compressed",
+    "--connect-timeout", "4",
+    "--max-time", "12",
+    "--max-filesize", String(PAGE_LIMIT),
+    "-H", "Accept: text/html",
+    s
+  ];
+}
+
+// The replies to one commit are not on the public API — that route answers 401
+// without a signature — but the Inertia page the browser opens carries them.
+// Same allowlist idea as the log pages: one URL shape, rebuilt from a validated
+// username and id, and anything else gets no command at all.
+function commitPageFetchArgs(url) {
+  var s = String(url === undefined || url === null ? "" : url);
+  if (!/^https:\/\/dev-null\.sh\/@[A-Za-z0-9-]{1,39}\/commits\/[0-9a-fA-F]{8,12}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s)) return [];
   return [
     "curl", "-fsS", "--compressed",
     "--connect-timeout", "4",
@@ -673,6 +694,28 @@ function parseLogPage(raw, limit) {
   return list ? parseCommitList(list, limit) : [];
 }
 
+// The `replies` prop of a commit page: the first page of answers to one
+// commit, plus the commit's own counter for the whole thread. The page carries
+// three today and the rest behind a cursor, so this one request is all the
+// panel spends per row; `remaining` is what stayed on the site.
+//
+// null means the page carried no replies prop at all, which is a page that
+// could not be read. An empty list is a commit nobody has answered.
+function commitReplies(raw) {
+  var page = inertiaPayload(raw);
+  if (!page || !isObject(page.props)) return null;
+
+  var replies = page.props.replies;
+  var list = isObject(replies) && Array.isArray(replies.data) ? replies.data : null;
+  if (list === null) return null;
+
+  var commit = isObject(page.props.commit) ? page.props.commit : {};
+  var parsed = parseCommitList(list, FEED_LIMIT);
+  var total = Math.max(count(commit.replies_count), parsed.length);
+
+  return { replies: parsed, total: total, remaining: total - parsed.length };
+}
+
 // The error body a 404 carries, for the "no such user" state.
 function parseErrorMessage(raw) {
   var data = parse(raw, 4096);
@@ -880,6 +923,8 @@ if (typeof module !== "undefined") {
     inertiaPayload: inertiaPayload,
     pageFeed: pageFeed,
     parseLogPage: parseLogPage,
+    commitPageFetchArgs: commitPageFetchArgs,
+    commitReplies: commitReplies,
     parseErrorMessage: parseErrorMessage,
     mergeCommits: mergeCommits,
     watchList: watchList,

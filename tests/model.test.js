@@ -527,6 +527,97 @@ test("a log page cannot smuggle markup or a foreign URL into a row", () => {
   assert.ok(!kept[0].body.includes("tracker.invalid"))
 })
 
+// ---- replies to one commit -----------------------------------------------
+//
+// The public API has no replies route (it answers 401 without a signature), so
+// the panel reads them off the commit page the browser would open. The page
+// carries the first three and a cursor for the rest; the model owns both the
+// allowlist for that request and the reading of what comes back.
+
+function commitPage(replies, total) {
+  return `<!doctype html><html><head></head><body>
+    <script type="application/json" id="app">${JSON.stringify({
+      component: "commit/show",
+      props: {
+        commit: { id: "01a149c1-f76d-703d-ae60-e82d7960889a", replies_count: total },
+        replies: {
+          data: replies,
+          per_page: 3,
+          next_page_url: replies.length < total
+            ? "https://dev-null.sh/@nunomaduro/commits/01a149c1-f76d-703d-ae60-e82d7960889a?cursor=abc"
+            : null
+        }
+      }
+    })}</script>
+  </body></html>`
+}
+
+function reply(overrides = {}) {
+  return commit(Object.assign({
+    id: uuidId(7),
+    parent_id: "01a149c1-f76d-703d-ae60-e82d7960889a",
+    body: "nice!",
+    stars_count: 0,
+    replies_count: 0
+  }, overrides))
+}
+
+test("commitPageFetchArgs only fetches a commit page it built itself", () => {
+  const url = Model.commitUrl("nunomaduro", "01a149c1-f76d-703d-ae60-e82d7960889a")
+  const args = Model.commitPageFetchArgs(url)
+
+  assert.equal(args[args.length - 1], url)
+  assert.ok(args.includes("Accept: text/html"))
+
+  // Exactly one dev-null.sh commit page: no profile, no log page, no other
+  // host, and no query string the panel did not build.
+  assert.deepEqual(Model.commitPageFetchArgs(Model.pageUrl("nunomaduro")), [])
+  assert.deepEqual(Model.commitPageFetchArgs(Model.logUrl("latest")), [])
+  assert.deepEqual(Model.commitPageFetchArgs("https://evil.example/@nunomaduro/commits/01a149c1-f76d-703d-ae60-e82d7960889a"), [])
+  assert.deepEqual(Model.commitPageFetchArgs(url + "?cursor=abc"), [])
+  assert.deepEqual(Model.commitPageFetchArgs(""), [])
+})
+
+test("commitReplies reads the answers and counts what stayed on the site", () => {
+  const page = Model.commitReplies(commitPage([reply()], 5))
+
+  assert.equal(page.replies.length, 1)
+  assert.equal(page.replies[0].isReply, true)
+  assert.equal(page.replies[0].authorUsername, "nunomaduro")
+  assert.equal(page.total, 5)
+  assert.equal(page.remaining, 4)
+
+  // The commit's counter is the whole thread; the page's own list is shorter,
+  // and a total smaller than what was read is not believed.
+  const exact = Model.commitReplies(commitPage([reply()], 0))
+  assert.equal(exact.total, 1)
+  assert.equal(exact.remaining, 0)
+})
+
+test("commitReplies tells an unanswered commit from a page it cannot read", () => {
+  const empty = Model.commitReplies(commitPage([], 0))
+  assert.deepEqual(empty.replies, [])
+  assert.equal(empty.remaining, 0)
+
+  assert.equal(Model.commitReplies(""), null)
+  assert.equal(Model.commitReplies("<html><body>login</body></html>"), null)
+  assert.equal(Model.commitReplies('<script type="application/json">{"props":{}}</script>'), null)
+  assert.equal(Model.commitReplies('<script type="application/json">{"props":{"replies":[]}}</script>'), null)
+})
+
+test("a commit page cannot smuggle markup or a foreign URL into a reply", () => {
+  const page = Model.commitReplies(commitPage([reply({
+    body: '<img src="https://tracker.invalid/p">hi',
+    author: Object.assign({}, AUTHOR, { avatar_url: "https://evil.example/pixel.png" })
+  })], 1))
+
+  assert.equal(page.replies.length, 1)
+  assert.ok(!page.replies[0].body.includes("<"))
+  assert.ok(!page.replies[0].body.includes("tracker.invalid"))
+  assert.equal(page.replies[0].avatarUrl, "")
+  assert.equal(page.replies[0].url, "https://dev-null.sh/@nunomaduro/commits/" + uuidId(7))
+})
+
 // ---- signing in ---------------------------------------------------------
 //
 // The flow is the mobile app's: a browser approves an SSH key for the account,

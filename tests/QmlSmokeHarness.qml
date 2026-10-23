@@ -432,17 +432,54 @@ ShellRoot {
         panel.lookupUser("")
         shell.expect("an empty lookup clears the error", panel.lookupInvalid === false)
 
-        // A row can be read in place, and a row without a URL has nothing to
-        // copy — the copy action is checked as a call, never executed, so the
-        // test cannot touch the clipboard.
-        shell.expect("a row can be expanded in place", builtTexts.some(function(value) {
-          return /show full commit|mostra tutto/i.test(String(value))
+        // A row opens its replies in place, and a row without a URL has
+        // nothing to copy — the copy action is checked as a call, never
+        // executed, so the test cannot touch the clipboard.
+        shell.expect("a row offers its replies", builtTexts.some(function(value) {
+          return /show 24 replies|mostra 24 risposte/i.test(String(value))
         }), builtTexts.join("|"))
+
+        // The page that carries them is parsed here and handed to the panel as
+        // if it had already arrived: the request itself is a network call this
+        // test must not make.
+        var replyPage = Model.commitReplies(
+          '<script type="application/json">' + JSON.stringify({
+            component: "commit/show",
+            props: {
+              commit: { replies_count: 4 },
+              replies: {
+                data: [{
+                  id: "01a149c4-f76d-703d-ae60-88e5315a0262",
+                  body: "a reply read in place",
+                  created_at: "2026-10-17T11:20:00Z",
+                  replies_count: 0,
+                  user: { username: "mnapoli", name: "Matthieu", avatar_url: "" }
+                }],
+                per_page: 3,
+                next_page_url: "https://dev-null.sh/@brendt/commits/x?cursor=y"
+              }
+            }
+          }) + "</script>"
+        )
+        shell.expect("a commit page's replies parse",
+          !!replyPage && replyPage.replies.length === 1, replyPage ? String(replyPage.replies.length) : "null")
+        shell.expect("the rest of the thread is counted",
+          !!replyPage && replyPage.remaining === 3, replyPage ? String(replyPage.remaining) : "null")
+
         var rowId = panel.entries.length > 0 ? panel.entries[0].id : ""
+        var pages = {}
+        pages[rowId] = replyPage
+        panel.replyPages = pages
         panel.toggleExpanded(rowId)
         shell.expect("the chevron expands that row", panel.expandedId === rowId, panel.expandedId)
+        shell.expect("the replies are the ones it fetched",
+          panel.repliesFor(rowId).length === 1, String(panel.repliesFor(rowId).length))
+        shell.expect("the rest of the thread is pointed at the site",
+          panel.repliesRemainingFor(rowId) === 3, String(panel.repliesRemainingFor(rowId)))
         panel.toggleExpanded(rowId)
         shell.expect("the chevron collapses it", panel.expandedId === "", panel.expandedId)
+        shell.expect("a foreign commit page gets no request",
+          Model.commitPageFetchArgs("https://evil.example/@brendt/commits/01a149c4-f76d-703d-ae60-88e5315a0262").length === 0)
         panel.copyCommitUrl({ id: "x", url: "" })
         shell.expect("a row with no url copies nothing", panel.copiedId === "", panel.copiedId)
 
@@ -575,7 +612,35 @@ ShellRoot {
           shell.expect("the cursor does not survive a close",
             panel.cursorIndex === -1 && panel.cursorActive === false, String(panel.cursorIndex))
 
-          finish()
+          // A reply is an item, not only model data: expanding a row whose
+          // page is already known draws the answers under the body and names
+          // the ones that stayed on the site. The page is handed over rather
+          // than fetched, so this costs no request.
+          var answered = Model.parseCommits(JSON.stringify({ data: [{
+            id: "01a149c5-f76d-703d-ae60-88e5315a0263",
+            short_hash: "a0263",
+            body: "a commit with answers",
+            created_at: "2026-10-17T10:30:00Z",
+            stars_count: 0,
+            replies_count: 4,
+            author: { username: "brendt", name: "Brent Roose" }
+          }] }))
+          panel.applyFeed(answered)
+          var cached = {}
+          cached[answered[0].id] = replyPage
+          panel.replyPages = cached
+          panel.toggleExpanded(answered[0].id)
+
+          Qt.callLater(function() {
+            var replyTexts = shell.visibleTexts(shell.keyboardPanel(panel).loadedContent)
+            shell.expect("the reply is drawn under its commit", replyTexts.some(function(value) {
+              return String(value).trim() === "a reply read in place"
+            }), replyTexts.join("|"))
+            shell.expect("the replies left on the site are named", replyTexts.some(function(value) {
+              return /3 more replies|3 altre risposte/i.test(String(value))
+            }), replyTexts.join("|"))
+            finish()
+          })
         }
 
         checkScroll()
